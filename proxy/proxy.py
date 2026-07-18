@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 
 from . import config as config_module
 from .config import ConfigWatcher
+from .debuglogging import DebugLogger
 from .health import router as health_router
 from .logging import log_request, log_response, setup_logging
 from .metrics import metrics
@@ -26,12 +27,13 @@ logger = logging.getLogger(__name__)
 _http_client: Optional[httpx.AsyncClient] = None
 _config_watcher: Optional[ConfigWatcher] = None
 _config: Optional[ProxyConfig] = None
+_debug_logger: Optional[DebugLogger] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for startup/shutdown."""
-    global _http_client, _config_watcher, _config
+    global _http_client, _config_watcher, _config, _debug_logger
 
     # Startup
     logger.info("Proxy starting up")
@@ -39,6 +41,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Load configuration
     config_path = pathlib.Path("config.yaml")
     _config = await config_module.load_config(config_path)
+
+    # Initialize debug logger
+    _debug_logger = DebugLogger(_config.debug)
 
     # Create shared HTTP client
     _http_client = httpx.AsyncClient(
@@ -170,6 +175,18 @@ def create_app() -> FastAPI:
             logging_config=_config.logging,
         )
 
+        # Capture request for debug logging
+        debug_conv_key = ""
+        debug_exchange_num = 0
+        if _debug_logger and _debug_logger.enabled and rewritten_body:
+            debug_conv_key, debug_exchange_num = await _debug_logger.start_exchange(
+                body=rewritten_body,
+                client_ip=client_ip,
+                method=request.method,
+                path=f"/{path}",
+                headers=dict(request.headers),
+            )
+
         # Forward to upstream
         if _http_client is None:
             return JSONResponse(
@@ -185,6 +202,9 @@ def create_app() -> FastAPI:
             headers=dict(request.headers),
             body=rewritten_body if rewritten_body else None,
             raw_body=body_bytes if not body else None,
+            debug_logger=_debug_logger,
+            debug_conv_key=debug_conv_key,
+            debug_exchange_num=debug_exchange_num,
         )
 
         # Log the response

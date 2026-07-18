@@ -75,6 +75,24 @@ class RewriteConfig(BaseModel):
     )
 
 
+class DebugConfig(BaseModel):
+    """Configuration for raw debug logging of request/response exchanges."""
+
+    enabled: bool = Field(
+        default=False,
+        description="If True, save full request/response exchanges to disk.",
+    )
+    log_dir: str = Field(
+        default="logs/debug",
+        description="Base directory for per-conversation debug log folders.",
+    )
+    max_response_size_mb: int = Field(
+        default=20,
+        ge=1,
+        description="Max MB to buffer for streaming responses before truncating.",
+    )
+
+
 class ModelOverride(BaseModel):
     """Per-model override configuration."""
 
@@ -97,6 +115,7 @@ class ProxyConfig(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     rewrite: RewriteConfig = Field(default_factory=RewriteConfig)
+    debug: DebugConfig = Field(default_factory=DebugConfig)
     models: Dict[str, ModelOverride] = Field(
         default_factory=dict,
         description="Per-model override map keyed by model name/path.",

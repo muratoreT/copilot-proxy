@@ -21,6 +21,11 @@ rewrite:
   inject_thinking_budget: false
   thinking_budget: 1024
 
+debug:
+  enabled: true
+  log_dir: logs/debug
+  max_response_size_mb: 20
+
 models:
   "qwen/qwen3.6-27b":
     max_tokens: 8192

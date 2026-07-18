@@ -9,6 +9,7 @@ import httpx
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 
+from .debuglogging import DebugLogger
 from .models import ProxyConfig
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,9 @@ async def forward_request(
     headers: dict,
     body: Optional[dict] = None,
     raw_body: Optional[bytes] = None,
+    debug_logger: Optional[DebugLogger] = None,
+    debug_conv_key: str = "",
+    debug_exchange_num: int = 0,
 ) -> Response:
     """
     Forward a request to the upstream vLLM server.
@@ -34,6 +38,9 @@ async def forward_request(
         headers: Request headers to forward.
         body: JSON body (already rewritten if applicable).
         raw_body: Raw body bytes (for non-JSON requests).
+        debug_logger: Optional debug logger instance.
+        debug_conv_key: Conversation key for debug grouping.
+        debug_exchange_num: Exchange number for debug tracking.
 
     Returns:
         FastAPI Response (streaming or non-streaming).
@@ -75,9 +82,18 @@ async def forward_request(
     try:
         if is_streaming:
             return _handle_streaming_response(
-                client, method, url, filtered_headers, json_body, path
+                client,
+                method,
+                url,
+                filtered_headers,
+                json_body,
+                path,
+                debug_logger,
+                debug_conv_key,
+                debug_exchange_num,
             )
         else:
+            start_time = time.monotonic()
             async with client.stream(
                 method,
                 url,
@@ -87,11 +103,24 @@ async def forward_request(
             ) as response:
                 # Read the full response
                 response_body = await response.aread()
+                duration_ms = (time.monotonic() - start_time) * 1000
                 # Build response with exact headers
                 response_headers = dict(response.headers)
                 # Remove hop-by-hop headers from response too
                 for h in hop_by_hop:
                     response_headers.pop(h, None)
+
+                # Debug: capture non-streaming response
+                if debug_logger and debug_logger.enabled and debug_conv_key:
+                    body_str = response_body.decode("utf-8", errors="replace")
+                    await debug_logger.complete_exchange(
+                        conv_key=debug_conv_key,
+                        exchange_num=debug_exchange_num,
+                        status_code=response.status_code,
+                        headers=response_headers,
+                        body=body_str,
+                        duration_ms=duration_ms,
+                    )
 
                 return Response(
                     content=response_body,
@@ -131,6 +160,9 @@ def _handle_streaming_response(
     headers: dict,
     json_body: Optional[dict],
     path: str = "",
+    debug_logger: Optional[DebugLogger] = None,
+    debug_conv_key: str = "",
+    debug_exchange_num: int = 0,
 ) -> StreamingResponse:
     """
     Handle a streaming SSE response by passing chunks through verbatim.
@@ -150,13 +182,55 @@ def _handle_streaming_response(
 
     async def generate():
         response = None
+        response_headers = {}
+        accumulated_body = bytearray()
+        max_bytes = (
+            debug_logger.config.max_response_size_mb * 1024 * 1024
+            if debug_logger and debug_logger.enabled
+            else 0
+        )
+        truncated = False
+        start_time = time.monotonic()
+
         try:
             async with client.stream(
                 method, url, headers=headers, json=json_body
             ) as response:
+                response_headers = dict(response.headers)
+                # Record response start for debug
+                if debug_logger and debug_logger.enabled and debug_conv_key:
+                    debug_logger.set_response_start_time(
+                        debug_conv_key, debug_exchange_num
+                    )
+
                 # Stream each chunk verbatim
                 async for chunk in response.aiter_bytes():
                     yield chunk
+
+                    # Accumulate for debug logging (with size cap)
+                    if (
+                        debug_logger
+                        and debug_logger.enabled
+                        and debug_conv_key
+                        and not truncated
+                    ):
+                        if (
+                            len(accumulated_body) + len(chunk)
+                            <= max_bytes
+                        ):
+                            accumulated_body.extend(chunk)
+                        else:
+                            accumulated_body.extend(
+                                chunk[: max_bytes - len(accumulated_body)]
+                            )
+                            truncated = True
+                            logger.warning(
+                                "Debug: response truncated for conv=%s "
+                                "exchange=%d (exceeded %d MB limit)",
+                                debug_conv_key,
+                                debug_exchange_num,
+                                debug_logger.config.max_response_size_mb,
+                            )
         except httpx.StreamError as e:
             logger.error("Stream error during SSE passthrough: %s", e)
             # Send error as SSE event
@@ -165,6 +239,37 @@ def _handle_streaming_response(
             )
             yield f"data: {error_event}\n\n".encode()
         finally:
+            duration_ms = (time.monotonic() - start_time) * 1000
+
+            # Debug: write accumulated response to disk
+            if (
+                debug_logger
+                and debug_logger.enabled
+                and debug_conv_key
+            ):
+                body_str = accumulated_body.decode("utf-8", errors="replace")
+                if truncated:
+                    body_str += (
+                        f"\n\n[TRUNCATED: response exceeded "
+                        f"{debug_logger.config.max_response_size_mb} MB limit]"
+                    )
+
+                # Strip hop-by-hop headers from response headers
+                clean_headers = {
+                    k: v
+                    for k, v in response_headers.items()
+                    if k.lower() not in response_hop_by_hop
+                }
+
+                await debug_logger.complete_exchange(
+                    conv_key=debug_conv_key,
+                    exchange_num=debug_exchange_num,
+                    status_code=response.status_code if response else 0,
+                    headers=clean_headers,
+                    body=body_str,
+                    duration_ms=duration_ms,
+                )
+
             # Ensure the response is closed if something went wrong
             if response is not None:
                 try:
