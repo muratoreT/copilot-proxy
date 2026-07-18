@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Conversations — Log Viewer{% endblock %}
+
+{% block content %}
+<h2>Conversations ({{ conversations|length }})</h2>
+
+{% if conversations %}
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Conversation Key</th>
+            <th>Exchanges</th>
+            <th>First Request</th>
+            <th>Last Request</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for conv in conversations %}
+        <tr>
+            <td>
+                <a href="/conversation/{{ conv.key }}">{{ conv.key }}</a>
+            </td>
+            <td>{{ conv.exchange_count }}</td>
+            <td class="timestamp">{{ conv.first_timestamp }}</td>
+            <td class="timestamp">{{ conv.last_timestamp }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty-state">No conversations found in <code>{{ log_dir }}</code>.</p>
+{% endif %}
+{% endblock %}

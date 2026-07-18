@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Exchange {{ exchange.get('exchange', '?') }} — {{ conv_key }}{% endblock %}
+
+{% block breadcrumbs %}
+<a href="/">Conversations</a> &rsaquo;
+<a href="/conversation/{{ conv_key }}">{{ conv_key }}</a> &rsaquo;
+<strong>Exchange {{ exchange.get('exchange', '?') }}</strong>
+{% endblock %}
+
+{% block content %}
+<h2>Exchange {{ exchange.get('exchange', '?') }}</h2>
+
+<section class="request-section">
+    <h3>Request</h3>
+    <dl class="meta-list">
+        <dt>Method</dt><dd><span class="method-badge">{{ exchange.request.method }}</span></dd>
+        <dt>Path</dt><dd>{{ exchange.request.path }}</dd>
+        <dt>Timestamp</dt><dd class="timestamp">{{ exchange.request.timestamp }}</dd>
+    </dl>
+
+    <details class="collapsible">
+        <summary>Headers ({{ exchange.request.headers|length }})</summary>
+        <table class="headers-table">
+            {% for k, v in exchange.request.headers.items() %}
+            <tr><td class="header-key">{{ k }}</td><td>{{ v }}</td></tr>
+            {% endfor %}
+        </table>
+    </details>
+
+    <details class="collapsible" open>
+        <summary>Body</summary>
+        <div class="json-viewer" id="request-body"></div>
+    </details>
+</section>
+
+<section class="response-section">
+    <h3>Response</h3>
+    <dl class="meta-list">
+        <dt>Status</dt><dd>
+            <span class="status-badge status-{{ exchange.response.status_code // 100 }}">
+                {{ exchange.response.status_code }}
+            </span>
+        </dd>
+        <dt>Duration</dt><dd>
+            {% if exchange.response.duration_ms %}
+                {{ "%.1f"|format(exchange.response.duration_ms) }} ms
+            {% else %}
+                —
+            {% endif %}
+        </dd>
+        <dt>Timestamp</dt><dd class="timestamp">{{ exchange.response.timestamp }}</dd>
+    </dl>
+
+    <details class="collapsible">
+        <summary>Headers ({{ exchange.response.headers|length }})</summary>
+        <table class="headers-table">
+            {% for k, v in exchange.response.headers.items() %}
+            <tr><td class="header-key">{{ k }}</td><td>{{ v }}</td></tr>
+            {% endfor %}
+        </table>
+    </details>
+
+    <details class="collapsible" open>
+        <summary>Body</summary>
+        <div class="json-viewer" id="response-body"></div>
+    </details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/json-tree.js"></script>
+<script>
+// Render request body
+{% if exchange.request.body %}
+renderJsonTree(document.getElementById('request-body'), {{ exchange.request.body | tojson }});
+{% else %}
+document.getElementById('request-body').textContent = '(no body)';
+{% endif %}
+
+// Render response body
+{% if exchange.response.body %}
+const respBody = {{ exchange.response.body | tojson }};
+if (typeof respBody === 'string') {
+    try { renderJsonTree(document.getElementById('response-body'), JSON.parse(respBody)); }
+    catch(e) { renderJsonTree(document.getElementById('response-body'), respBody); }
+} else {
+    renderJsonTree(document.getElementById('response-body'), respBody);
+}
+{% else %}
+document.getElementById('response-body').textContent = '(no body — streaming)';
+{% endif %}
+</script>
+{% endblock %}
