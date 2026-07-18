@@ -1,5 +1,5 @@
 [Unit]
-Description=Copilot Proxy - OpenAI-compatible reverse proxy for vLLM
+Description=Copilot Proxy - OpenAI-compatible reverse proxy for a local AI server
 After=network.target
 
 [Service]

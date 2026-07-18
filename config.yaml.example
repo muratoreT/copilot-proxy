@@ -2,7 +2,7 @@ listen:
   host: 0.0.0.0
   port: 8081
 
-vllm:
+localAIServer:
   url: http://127.0.0.1:8000
 
 logging:
@@ -22,7 +22,7 @@ rewrite:
   thinking_budget: 1024
 
 models:
-  "/mnt/models/vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":
+  "/mnt/models/localAIServer/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":
     max_tokens: 8192
-  "/mnt/models/vllm/Qwen/Qwen3-0.6B":
+  "/mnt/models/localAIServer/Qwen/Qwen3-0.6B":
     max_tokens: 2048

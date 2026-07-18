@@ -1,4 +1,4 @@
-"""Streaming passthrough to upstream vLLM server."""
+"""Streaming passthrough to upstream local AI server."""
 
 import json
 import logging
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def forward_request(
     client: httpx.AsyncClient,
-    vllm_url: str,
+    local_ai_server_url: str,
     method: str,
     path: str,
     headers: dict,
@@ -28,11 +28,11 @@ async def forward_request(
     debug_exchange_num: int = 0,
 ) -> Response:
     """
-    Forward a request to the upstream vLLM server.
+    Forward a request to the upstream local AI server.
 
     Args:
         client: Shared httpx AsyncClient instance.
-        vllm_url: Base URL of the vLLM server.
+        local_ai_server_url: Base URL of the local AI server.
         method: HTTP method (GET, POST, etc.).
         path: Request path to forward.
         headers: Request headers to forward.
@@ -45,7 +45,7 @@ async def forward_request(
     Returns:
         FastAPI Response (streaming or non-streaming).
     """
-    url = f"{vllm_url.rstrip('/')}/{path.lstrip('/')}"
+    url = f"{local_ai_server_url.rstrip('/')}/{path.lstrip('/')}"
 
     # Filter out hop-by-hop headers that shouldn't be forwarded
     # Also remove content-length since the body may have been rewritten

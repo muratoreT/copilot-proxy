@@ -21,7 +21,7 @@ class TestYAMLLoading:
 listen:
   host: 0.0.0.0
   port: 8081
-vllm:
+localAIServer:
   url: http://127.0.0.1:8000
 """
             f.write(yaml_content)
@@ -30,7 +30,7 @@ vllm:
             assert config is not None
             assert config.listen.host == "0.0.0.0"
             assert config.listen.port == 8081
-            assert config.vllm.url == "http://127.0.0.1:8000"
+            assert config.localAIServer.url == "http://127.0.0.1:8000"
         os.unlink(f.name)
 
     @pytest.mark.asyncio
@@ -40,7 +40,7 @@ vllm:
 listen:
   host: 127.0.0.1
   port: 9090
-vllm:
+localAIServer:
   url: http://localhost:8000
 defaults:
   max_tokens: 2048
@@ -62,7 +62,7 @@ defaults:
 listen:
   host: 127.0.0.1
   port: 99999
-vllm:
+localAIServer:
   url: http://127.0.0.1:8000
 """
             f.write(yaml_content)

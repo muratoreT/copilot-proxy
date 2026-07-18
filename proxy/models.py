@@ -12,12 +12,12 @@ class ListenConfig(BaseModel):
     port: int = Field(default=8081, ge=1, le=65535, description="Port to bind to.")
 
 
-class VLLMConfig(BaseModel):
-    """Configuration for the upstream vLLM server."""
+class LocalAIServerConfig(BaseModel):
+    """Configuration for the upstream local AI server."""
 
     url: str = Field(
         default="http://127.0.0.1:8000",
-        description="Base URL of the vLLM server.",
+        description="Base URL of the local AI server.",
     )
 
 
@@ -111,7 +111,7 @@ class ProxyConfig(BaseModel):
     """Top-level configuration combining all sub-configs."""
 
     listen: ListenConfig = Field(default_factory=ListenConfig)
-    vllm: VLLMConfig = Field(default_factory=VLLMConfig)
+    localAIServer: LocalAIServerConfig = Field(default_factory=LocalAIServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     rewrite: RewriteConfig = Field(default_factory=RewriteConfig)

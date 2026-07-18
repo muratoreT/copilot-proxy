@@ -22,9 +22,9 @@ async def health_check() -> dict:
 @router.get("/ready")
 async def readiness_check() -> dict:
     """
-    Readiness check that verifies upstream vLLM is reachable.
+    Readiness check that verifies the upstream local AI server is reachable.
 
-    Probes vLLM's /v1/models endpoint to confirm the server is alive.
+    Probes /v1/models on the upstream server to confirm it is alive.
     """
     config = proxy_module._config
     if config is None:
@@ -33,25 +33,25 @@ async def readiness_check() -> dict:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                f"{config.vllm.url.rstrip('/')}/v1/models"
+                f"{config.localAIServer.url.rstrip('/')}/v1/models"
             )
             if response.status_code == 200:
-                return {"status": "ready", "upstream": config.vllm.url}
+                return {"status": "ready", "upstream": config.localAIServer.url}
             else:
                 logger.warning(
                     "Upstream returned non-200: %d", response.status_code
                 )
                 raise HTTPException(
                     status_code=503,
-                    detail=f"Upstream vLLM unhealthy (status {response.status_code})",
+                    detail=f"Upstream local AI server unhealthy (status {response.status_code})",
                 )
     except httpx.ConnectError:
         raise HTTPException(
             status_code=503,
-            detail="Cannot connect to upstream vLLM server",
+            detail="Cannot connect to upstream local AI server",
         )
     except httpx.TimeoutException:
         raise HTTPException(
             status_code=503,
-            detail="Upstream vLLM server timed out",
+            detail="Upstream local AI server timed out",
         )

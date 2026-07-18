@@ -2,7 +2,7 @@
 
 import copy
 
-from proxy.models import DefaultsConfig, ProxyConfig, RewriteConfig, VLLMConfig, ListenConfig, LoggingConfig, ModelOverride
+from proxy.models import DefaultsConfig, ProxyConfig, RewriteConfig, LocalAIServerConfig, ListenConfig, LoggingConfig, ModelOverride
 from proxy.rewrite import rewrite_request
 
 
@@ -12,7 +12,7 @@ class TestMaxTokensClamping:
     def test_clamps_max_tokens_when_exceeding_default(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(clamp_max_tokens=True),
         )
@@ -24,7 +24,7 @@ class TestMaxTokensClamping:
     def test_does_not_clamp_when_under_limit(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(clamp_max_tokens=True),
         )
@@ -35,7 +35,7 @@ class TestMaxTokensClamping:
     def test_injects_max_tokens_when_absent(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(clamp_max_tokens=True),
         )
@@ -47,7 +47,7 @@ class TestMaxTokensClamping:
     def test_no_clamping_when_disabled(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=None, top_p=None),
             rewrite=RewriteConfig(clamp_max_tokens=False),
         )
@@ -63,7 +63,7 @@ class TestModelSpecificOverrides:
     def test_clamps_to_model_override(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(clamp_max_tokens=True),
             models={"my-model": ModelOverride(max_tokens=2048)},
@@ -76,7 +76,7 @@ class TestModelSpecificOverrides:
     def test_model_override_not_applied_to_other_models(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(clamp_max_tokens=True),
             models={"my-model": ModelOverride(max_tokens=2048)},
@@ -93,7 +93,7 @@ class TestTemperatureAndTopP:
     def test_injects_temperature_when_absent(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=0.7, top_p=0.9),
             rewrite=RewriteConfig(clamp_max_tokens=False),
         )
@@ -104,7 +104,7 @@ class TestTemperatureAndTopP:
     def test_injects_top_p_when_absent(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=0.7, top_p=0.9),
             rewrite=RewriteConfig(clamp_max_tokens=False),
         )
@@ -115,7 +115,7 @@ class TestTemperatureAndTopP:
     def test_does_not_override_client_temperature(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=0.7, top_p=0.9),
             rewrite=RewriteConfig(clamp_max_tokens=False),
         )
@@ -126,7 +126,7 @@ class TestTemperatureAndTopP:
     def test_does_not_override_client_top_p(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=0.7, top_p=0.9),
             rewrite=RewriteConfig(clamp_max_tokens=False),
         )
@@ -141,7 +141,7 @@ class TestThinkingBudget:
     def test_injects_thinking_budget_when_enabled(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(
                 clamp_max_tokens=False,
@@ -157,7 +157,7 @@ class TestThinkingBudget:
     def test_does_not_override_existing_thinking_budget(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096),
             rewrite=RewriteConfig(
                 clamp_max_tokens=False,
@@ -176,7 +176,7 @@ class TestReasoningRemoval:
     def test_removes_reasoning_when_enabled(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=None, top_p=None),
             rewrite=RewriteConfig(
                 clamp_max_tokens=False,
@@ -192,7 +192,7 @@ class TestReasoningRemoval:
     def test_keeps_reasoning_when_disabled(self):
         config = ProxyConfig(
             listen=ListenConfig(),
-            vllm=VLLMConfig(),
+            localAIServer=LocalAIServerConfig(),
             defaults=DefaultsConfig(max_tokens=4096, temperature=None, top_p=None),
             rewrite=RewriteConfig(
                 clamp_max_tokens=False,

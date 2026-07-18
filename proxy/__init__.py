@@ -1,1 +1,1 @@
-# copilot-proxy: OpenAI-compatible reverse proxy for vLLM
+# copilot-proxy: OpenAI-compatible reverse proxy for a local AI server

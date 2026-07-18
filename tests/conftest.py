@@ -5,11 +5,11 @@ import pytest
 from proxy.models import (
     DefaultsConfig,
     ListenConfig,
+    LocalAIServerConfig,
     LoggingConfig,
     ModelOverride,
     ProxyConfig,
     RewriteConfig,
-    VLLMConfig,
 )
 
 
@@ -18,7 +18,7 @@ def default_config():
     """Return a default ProxyConfig for testing."""
     return ProxyConfig(
         listen=ListenConfig(host="127.0.0.1", port=9999),
-        vllm=VLLMConfig(url="http://127.0.0.1:8000"),
+        localAIServer=LocalAIServerConfig(url="http://127.0.0.1:8000"),
         logging=LoggingConfig(requests=True, responses=False, body_preview_chars=400),
         defaults=DefaultsConfig(max_tokens=4096, temperature=0.1, top_p=1.0),
         rewrite=RewriteConfig(
@@ -36,7 +36,7 @@ def config_with_model_overrides():
     """Return a ProxyConfig with model-specific overrides."""
     return ProxyConfig(
         listen=ListenConfig(host="127.0.0.1", port=9999),
-        vllm=VLLMConfig(url="http://127.0.0.1:8000"),
+        localAIServer=LocalAIServerConfig(url="http://127.0.0.1:8000"),
         logging=LoggingConfig(requests=True, responses=False, body_preview_chars=400),
         defaults=DefaultsConfig(max_tokens=4096, temperature=0.1, top_p=1.0),
         rewrite=RewriteConfig(

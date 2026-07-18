@@ -7,14 +7,14 @@ from httpx import AsyncClient, Response, Request, HTTPStatusError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from proxy.streaming import forward_request
-from proxy.models import ProxyConfig, VLLMConfig, ListenConfig, DefaultsConfig, RewriteConfig, LoggingConfig
+from proxy.models import ProxyConfig, LocalAIServerConfig, ListenConfig, DefaultsConfig, RewriteConfig, LoggingConfig
 
 
 @pytest.fixture
 def minimal_config():
     return ProxyConfig(
         listen=ListenConfig(host="127.0.0.1", port=9999),
-        vllm=VLLMConfig(url="http://127.0.0.1:8000"),
+        localAIServer=LocalAIServerConfig(url="http://127.0.0.1:8000"),
         logging=LoggingConfig(requests=True, responses=False, body_preview_chars=400),
         defaults=DefaultsConfig(max_tokens=4096, temperature=0.1, top_p=1.0),
         rewrite=RewriteConfig(clamp_max_tokens=False),
@@ -31,15 +31,11 @@ class TestStreamingPassthrough:
         from starlette.responses import StreamingResponse
 
         mock_stream_context = MagicMock()
-        async def aenter(self):
-            return self
-        async def aexit(self, *args):
-            pass
-        mock_stream_context.__aenter__ = aenter
-        mock_stream_context.__aexit__ = aexit
+        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_stream_context)
+        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
         mock_stream_context.headers = {"content-type": "text/event-stream"}
 
-        async def aiter_bytes(self):
+        async def aiter_bytes():
             yield b'data: {"test": true}'
             yield b''
         mock_stream_context.aiter_bytes = aiter_bytes
@@ -49,7 +45,7 @@ class TestStreamingPassthrough:
 
         result = await forward_request(
             client=mock_client,
-            vllm_url="http://127.0.0.1:8000",
+            local_ai_server_url="http://127.0.0.1:8000",
             method="POST",
             path="/v1/chat/completions",
             headers={"Content-Type": "application/json"},
@@ -60,27 +56,21 @@ class TestStreamingPassthrough:
     @pytest.mark.asyncio
     async def test_non_streaming_returns_response(self, minimal_config):
         """Non-streaming requests return a regular Response."""
-        mock_response = MagicMock()
+        mock_response = AsyncMock()
         mock_response.status_code = 200
         mock_response.headers = {"content-type": "application/json"}
+        mock_response.aread = AsyncMock(return_value=b'{"choices": []}')
 
-        async def aenter(self):
-            return self
-        async def aexit(self, *args):
-            pass
-        async def aread(self):
-            return b'{"choices": []}'
-
-        mock_response.__aenter__ = aenter
-        mock_response.__aexit__ = aexit
-        mock_response.aread = aread
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__.return_value = mock_response
+        mock_stream_cm.__aexit__.return_value = None
 
         mock_client = MagicMock()
-        mock_client.stream = MagicMock(return_value=mock_response)
+        mock_client.stream = MagicMock(return_value=mock_stream_cm)
 
         result = await forward_request(
             client=mock_client,
-            vllm_url="http://127.0.0.1:8000",
+            local_ai_server_url="http://127.0.0.1:8000",
             method="POST",
             path="/v1/chat/completions",
             headers={"Content-Type": "application/json"},
@@ -100,15 +90,11 @@ class TestChunkOrdering:
         chunks_received = []
 
         mock_stream_context = MagicMock()
-        async def aenter(self):
-            return self
-        async def aexit(self, *args):
-            pass
-        mock_stream_context.__aenter__ = aenter
-        mock_stream_context.__aexit__ = aexit
+        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_stream_context)
+        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
         mock_stream_context.headers = {"content-type": "text/event-stream"}
 
-        async def aiter_bytes(self):
+        async def aiter_bytes():
             for i in range(5):
                 chunk = f'data: {{"index": {i}}}'.encode()
                 chunks_received.append(chunk)
@@ -121,15 +107,20 @@ class TestChunkOrdering:
 
         result = await forward_request(
             client=mock_client,
-            vllm_url="http://127.0.0.1:8000",
+            local_ai_server_url="http://127.0.0.1:8000",
             method="POST",
             path="/v1/chat/completions",
             headers={"Content-Type": "application/json"},
             body={"model": "test", "stream": True, "messages": []},
         )
-        # Verify chunks were received in order
+        streamed_chunks = []
+        async for chunk in result.body_iterator:
+            if chunk:
+                streamed_chunks.append(chunk)
+
+        # Verify chunks were streamed in order
         for i in range(5):
-            assert f'"index": {i}'.encode() in chunks_received[i]
+            assert f'"index": {i}'.encode() in streamed_chunks[i]
 
 
 class TestContentTypePreservation:
@@ -141,15 +132,11 @@ class TestContentTypePreservation:
         from starlette.responses import StreamingResponse
 
         mock_stream_context = MagicMock()
-        async def aenter(self):
-            return self
-        async def aexit(self, *args):
-            pass
-        mock_stream_context.__aenter__ = aenter
-        mock_stream_context.__aexit__ = aexit
+        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_stream_context)
+        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
         mock_stream_context.headers = {"content-type": "text/event-stream; charset=utf-8"}
 
-        async def aiter_bytes(self):
+        async def aiter_bytes():
             yield b'data: {"test": true}'
             yield b''
         mock_stream_context.aiter_bytes = aiter_bytes
@@ -159,7 +146,7 @@ class TestContentTypePreservation:
 
         result = await forward_request(
             client=mock_client,
-            vllm_url="http://127.0.0.1:8000",
+            local_ai_server_url="http://127.0.0.1:8000",
             method="POST",
             path="/v1/chat/completions",
             headers={"Content-Type": "application/json"},

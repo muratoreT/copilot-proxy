@@ -7,14 +7,14 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from proxy.proxy import create_app
-from proxy.models import ProxyConfig, VLLMConfig, ListenConfig, DefaultsConfig, RewriteConfig, LoggingConfig
+from proxy.models import ProxyConfig, LocalAIServerConfig, ListenConfig, DefaultsConfig, RewriteConfig, LoggingConfig
 
 
 @pytest.fixture
 def test_config():
     return ProxyConfig(
         listen=ListenConfig(host="127.0.0.1", port=9999),
-        vllm=VLLMConfig(url="http://127.0.0.1:8000"),
+        localAIServer=LocalAIServerConfig(url="http://127.0.0.1:8000"),
         logging=LoggingConfig(requests=True, responses=False, body_preview_chars=400),
         defaults=DefaultsConfig(max_tokens=4096, temperature=0.1, top_p=1.0),
         rewrite=RewriteConfig(clamp_max_tokens=False),
@@ -48,27 +48,22 @@ class TestHealthEndpoint:
 
 
 class TestReadinessEndpoint:
-    """Readiness endpoint probes vLLM."""
+    """Readiness endpoint probes the local AI server."""
 
     @pytest.mark.asyncio
-    async def test_ready_returns_ready_when_vllm_up(self, client, test_config):
-        """Ready endpoint returns ready when vLLM is reachable."""
+    async def test_ready_returns_ready_when_local_ai_server_up(self, client, test_config):
+        """Ready endpoint returns ready when the local AI server is reachable."""
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        async def mock_get(*args, **kwargs):
-            return mock_response
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
 
-        mock_client_class = MagicMock()
-        async def aenter(self):
-            return self
-        async def aexit(self, *args):
-            pass
-        mock_client_class.__aenter__ = aenter
-        mock_client_class.__aexit__ = aexit
-        mock_client_class.get = mock_get
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__.return_value = mock_client
+        mock_client_cm.__aexit__.return_value = None
 
-        with patch("proxy.health.httpx.AsyncClient", return_value=mock_client_class()):
+        with patch("proxy.health.httpx.AsyncClient", return_value=mock_client_cm):
             with patch("proxy.proxy._config", test_config):
                 response = await client.get("/ready")
                 assert response.status_code == 200
@@ -76,8 +71,8 @@ class TestReadinessEndpoint:
                 assert data["status"] == "ready"
 
     @pytest.mark.asyncio
-    async def test_ready_returns_not_ready_when_vllm_down(self, client, test_config):
-        """Ready endpoint returns not_ready when vLLM is unreachable."""
+    async def test_ready_returns_not_ready_when_local_ai_server_down(self, client, test_config):
+        """Ready endpoint returns not_ready when the local AI server is unreachable."""
         with patch("proxy.health.httpx.AsyncClient") as mock_client_class:
             mock_client_class.side_effect = httpx.ConnectError("Connection refused")
             with patch("proxy.proxy._config", test_config):
@@ -102,26 +97,18 @@ class TestUnknownEndpointForwarding:
 
     @pytest.mark.asyncio
     async def test_unknown_endpoint_forwarded(self, client, test_config):
-        """Unknown path is forwarded to vLLM upstream."""
-        mock_response = MagicMock()
+        """Unknown path is forwarded to the local AI server upstream."""
+        mock_response = AsyncMock()
         mock_response.status_code = 200
         mock_response.headers = {"content-type": "application/json"}
+        mock_response.aread = AsyncMock(return_value=b'{"models": []}')
 
-        async def aenter(self):
-            return self
-
-        async def aexit(self, *args):
-            pass
-
-        async def aread(self):
-            return b'{"models": []}'
-
-        mock_response.__aenter__ = aenter
-        mock_response.__aexit__ = aexit
-        mock_response.aread = aread
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__.return_value = mock_response
+        mock_stream_cm.__aexit__.return_value = None
 
         mock_http_client = MagicMock()
-        mock_http_client.stream = MagicMock(return_value=mock_response)
+        mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
 
         with patch("proxy.proxy._config", test_config):
             with patch("proxy.proxy._http_client", mock_http_client):
@@ -135,25 +122,17 @@ class TestErrorForwarding:
     @pytest.mark.asyncio
     async def test_error_status_forwarded(self, client, test_config):
         """Upstream error status is preserved."""
-        mock_response = MagicMock()
+        mock_response = AsyncMock()
         mock_response.status_code = 500
         mock_response.headers = {"content-type": "application/json"}
+        mock_response.aread = AsyncMock(return_value=b'{"error": "internal error"}')
 
-        async def aenter(self):
-            return self
-
-        async def aexit(self, *args):
-            pass
-
-        async def aread(self):
-            return b'{"error": "internal error"}'
-
-        mock_response.__aenter__ = aenter
-        mock_response.__aexit__ = aexit
-        mock_response.aread = aread
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__.return_value = mock_response
+        mock_stream_cm.__aexit__.return_value = None
 
         mock_http_client = MagicMock()
-        mock_http_client.stream = MagicMock(return_value=mock_response)
+        mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
 
         with patch("proxy.proxy._config", test_config):
             with patch("proxy.proxy._http_client", mock_http_client):

@@ -64,10 +64,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _config_watcher.start()
 
     logger.info(
-        "Proxy started: host=%s, port=%s, vllm_url=%s",
+        "Proxy started: host=%s, port=%s, local_ai_server_url=%s",
         _config.listen.host,
         _config.listen.port,
-        _config.vllm.url,
+        _config.localAIServer.url,
     )
 
     yield
@@ -88,7 +88,7 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="Copilot Proxy",
-        description="OpenAI-compatible reverse proxy for vLLM",
+        description="OpenAI-compatible reverse proxy for a local AI server",
         version="1.0.0",
         lifespan=lifespan,
     )
@@ -115,7 +115,7 @@ def create_app() -> FastAPI:
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
     )
     async def proxy_request(request: Request, path: str) -> Response:
-        """Catch-all route that forwards requests to upstream vLLM."""
+        """Catch-all route that forwards requests to the upstream local AI server."""
         global _config
 
         # Get current config
@@ -196,7 +196,7 @@ def create_app() -> FastAPI:
 
         response = await forward_request(
             client=_http_client,
-            vllm_url=_config.vllm.url,
+            local_ai_server_url=_config.localAIServer.url,
             method=request.method,
             path=path,
             headers=dict(request.headers),
