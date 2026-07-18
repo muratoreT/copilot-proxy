@@ -1,0 +1,29 @@
+[Unit]
+Description=Copilot Proxy - OpenAI-compatible reverse proxy for vLLM
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntuai
+Group=ubuntuai
+WorkingDirectory=/opt/copilot-proxy
+ExecStart=/opt/copilot-proxy/venv/bin/python proxy_entry.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=copilot-proxy
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/copilot-proxy/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

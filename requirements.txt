@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+httpx
+pyyaml
+pydantic-settings
+structlog
+pytest
+pytest-asyncio
+pytest-httpx

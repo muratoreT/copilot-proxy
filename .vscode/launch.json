@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Copilot Proxy",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/proxy_entry.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {},
+      "args": []
+    }
+  ]
+}
