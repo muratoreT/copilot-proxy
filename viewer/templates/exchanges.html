@@ -18,6 +18,7 @@
             <th>Path</th>
             <th>Status</th>
             <th>Duration</th>
+            <th>Retry</th>
             <th>Timestamp</th>
         </tr>
     </thead>
@@ -41,6 +42,15 @@
                     {{ "%.1f"|format(ex.response_duration_ms) }} ms
                 {% else %}
                     —
+                {% endif %}
+            </td>
+            <td class="retry">
+                {% if ex.retry_count > 0 %}
+                    <span class="retry-badge" title="Retried {{ ex.retry_count }} time(s)">
+                        ⚡ {{ ex.retry_count }}
+                    </span>
+                {% else %}
+                    <span class="no-retry">—</span>
                 {% endif %}
             </td>
             <td class="timestamp">{{ ex.request_timestamp }}</td>

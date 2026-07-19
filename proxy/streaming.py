@@ -296,8 +296,10 @@ def _handle_streaming_response(
         retry_enabled = bool(retry_cfg and retry_cfg.enabled)
         if retry_enabled and retry_cfg.only_after_tool_messages:
             retry_enabled = _has_tool_messages(json_body)
-        retries_left = retry_cfg.max_retries if retry_enabled else 0
+        max_retries = retry_cfg.max_retries if retry_enabled else 0
+        retries_left = max_retries
         active_json_body = json_body
+        retry_count = 0  # Track how many retries were actually performed
 
         try:
             while True:
@@ -350,9 +352,11 @@ def _handle_streaming_response(
                 if retry_enabled and _is_empty_stream_completion(buffered_chunks):
                     if retries_left > 0:
                         retries_left -= 1
+                        retry_count += 1
                         logger.warning(
-                            "Empty completion detected for %s; retrying once",
+                            "Empty completion detected for %s; retrying (attempt %d)",
                             path or url,
+                            retry_count,
                         )
                         active_json_body = _build_retry_body(active_json_body)
                         if retry_cfg.retry_delay_ms > 0:
@@ -400,6 +404,7 @@ def _handle_streaming_response(
                     headers=clean_headers,
                     body=body_str,
                     duration_ms=duration_ms,
+                    retry_count=retry_count,
                 )
 
             # Ensure the response is closed if something went wrong

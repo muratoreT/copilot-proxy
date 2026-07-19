@@ -100,6 +100,34 @@ footer code { background: var(--bg-surface); padding: 2px 6px; border-radius: 3p
     border: 1px solid var(--border);
 }
 
+/* Retry indicators */
+.retry-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: rgba(249, 226, 175, 0.15);
+    color: var(--yellow);
+    border: 1px solid rgba(249, 226, 175, 0.3);
+}
+
+.no-retry {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.retry-notice {
+    background: rgba(249, 226, 175, 0.1);
+    border: 1px solid rgba(249, 226, 175, 0.25);
+    border-radius: var(--radius);
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+    color: var(--yellow);
+}
+}
+
 .status-badge {
     display: inline-block;
     padding: 1px 8px;

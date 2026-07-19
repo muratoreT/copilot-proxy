@@ -11,6 +11,12 @@
 {% block content %}
 <h2>Exchange {{ exchange.get('exchange', '?') }}</h2>
 
+{% if exchange.get('retry_count', 0) > 0 %}
+<div class="retry-notice">
+    ⚡ This exchange was retried {{ exchange.retry_count }} time(s) due to empty streaming completion(s).
+</div>
+{% endif %}
+
 <section class="request-section">
     <h3>Request</h3>
     <dl class="meta-list">

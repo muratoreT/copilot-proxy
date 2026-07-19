@@ -38,6 +38,7 @@ class ExchangeSummary(BaseModel):
     request_timestamp: str = ""
     response_status_code: Optional[int] = None
     response_duration_ms: Optional[float] = None
+    retry_count: int = 0
 
 
 class ConversationInfo(BaseModel):
@@ -91,6 +92,7 @@ def _scan_conversations(log_dir: Path) -> List[ConversationInfo]:
                     request_timestamp=req.get("timestamp", ""),
                     response_status_code=resp.get("status_code"),
                     response_duration_ms=resp.get("duration_ms"),
+                    retry_count=data.get("retry_count", 0),
                 )
             )
 

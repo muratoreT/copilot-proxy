@@ -38,6 +38,9 @@ class ExchangeData:
     response_body: Optional[str] = None
     response_duration_ms: Optional[float] = None
 
+    # Retry info
+    retry_count: int = 0
+
     # Internal
     _response_start_time: Optional[float] = None
 
@@ -157,6 +160,7 @@ class DebugLogger:
         headers: Dict[str, str],
         body: str,
         duration_ms: float,
+        retry_count: int = 0,
     ) -> None:
         """
         Complete an exchange with response data and write to disk.
@@ -192,6 +196,7 @@ class DebugLogger:
             target.response_headers = headers
             target.response_body = body
             target.response_duration_ms = round(duration_ms, 2)
+            target.retry_count = retry_count
 
             # Truncation
             body_bytes = body.encode("utf-8", errors="replace")
@@ -227,6 +232,7 @@ class DebugLogger:
         data = {
             "exchange": exchange.exchange_num,
             "conversation_key": exchange.conversation_key,
+            "retry_count": exchange.retry_count,
             "request": {
                 "timestamp": exchange.request_timestamp,
                 "method": exchange.request_method,
