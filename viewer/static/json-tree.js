@@ -101,15 +101,33 @@ function jsonType(value) {
 function renderBodySections(container, data) {
     container.innerHTML = '';
 
-    if (!data || typeof data !== 'object') {
+    if (data === null || data === undefined || data === '') {
         container.textContent = '(no body)';
+        return;
+    }
+
+    const normalized = normalizeBodyData(data);
+    const body = normalized.value;
+
+    if (body === null || body === undefined || body === '') {
+        container.textContent = '(no body)';
+        return;
+    }
+
+    if (Array.isArray(body)) {
+        appendCollapsibleSection(container, 'Items', body.length, body);
+        return;
+    }
+
+    if (typeof body !== 'object') {
+        appendRawBodySection(container, body, normalized.wasJsonString);
         return;
     }
 
     const scalars = [];
     const collapsibles = [];
 
-    for (const [key, value] of Object.entries(data)) {
+    for (const [key, value] of Object.entries(body)) {
         const type = jsonType(value);
 
         if (type === 'array') {
@@ -179,20 +197,69 @@ function renderBodySections(container, data) {
 
     // Render collapsible sections for arrays and large objects
     collapsibles.forEach(({ label, count, value }) => {
-        const details = document.createElement('details');
-        details.className = 'collapsible';
-
-        const summary = document.createElement('summary');
-        summary.textContent = `${label} (${count})`;
-        details.appendChild(summary);
-
-        const jsonContainer = document.createElement('div');
-        jsonContainer.className = 'json-tree';
-        jsonContainer.appendChild(buildNode(value));
-        details.appendChild(jsonContainer);
-
-        container.appendChild(details);
+        appendCollapsibleSection(container, label, count, value);
     });
+
+    if (scalars.length === 0 && collapsibles.length === 0) {
+        appendCollapsibleSection(container, 'Body', Object.keys(body).length, body);
+    }
+}
+
+function normalizeBodyData(data) {
+    if (typeof data !== 'string') {
+        return { value: data, wasJsonString: false };
+    }
+
+    const trimmed = data.trim();
+    if (!trimmed) {
+        return { value: '', wasJsonString: false };
+    }
+
+    const looksLikeJson =
+        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'));
+
+    if (!looksLikeJson) {
+        return { value: data, wasJsonString: false };
+    }
+
+    try {
+        return { value: JSON.parse(trimmed), wasJsonString: true };
+    } catch (_err) {
+        return { value: data, wasJsonString: false };
+    }
+}
+
+function appendCollapsibleSection(container, label, count, value) {
+    const details = document.createElement('details');
+    details.className = 'collapsible';
+
+    const summary = document.createElement('summary');
+    summary.textContent = `${label} (${count})`;
+    details.appendChild(summary);
+
+    const jsonContainer = document.createElement('div');
+    jsonContainer.className = 'json-tree';
+    jsonContainer.appendChild(buildNode(value));
+    details.appendChild(jsonContainer);
+
+    container.appendChild(details);
+}
+
+function appendRawBodySection(container, value, parsedFromJsonString) {
+    const details = document.createElement('details');
+    details.className = 'collapsible';
+
+    const summary = document.createElement('summary');
+    summary.textContent = parsedFromJsonString ? 'Body (parsed fallback)' : 'Body';
+    details.appendChild(summary);
+
+    const pre = document.createElement('pre');
+    pre.className = 'json-tree';
+    pre.textContent = String(value);
+    details.appendChild(pre);
+
+    container.appendChild(details);
 }
 
 function capitalize(str) {
