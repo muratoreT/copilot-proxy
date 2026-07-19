@@ -202,6 +202,7 @@ def create_app() -> FastAPI:
             headers=dict(request.headers),
             body=rewritten_body if rewritten_body else None,
             raw_body=body_bytes if not body else None,
+            proxy_config=_config,
             debug_logger=_debug_logger,
             debug_conv_key=debug_conv_key,
             debug_exchange_num=debug_exchange_num,

@@ -46,6 +46,11 @@ defaults:
   max_tokens: 2048
   temperature: 0.5
   top_p: 0.8
+streaming_retry:
+    enabled: true
+    max_retries: 1
+    only_after_tool_messages: true
+    retry_delay_ms: 10
 """
             f.write(yaml_content)
             f.flush()
@@ -53,6 +58,8 @@ defaults:
             assert config.defaults.max_tokens == 2048
             assert config.defaults.temperature == 0.5
             assert config.defaults.top_p == 0.8
+            assert config.streaming_retry.enabled is True
+            assert config.streaming_retry.max_retries == 1
         os.unlink(f.name)
 
     @pytest.mark.asyncio

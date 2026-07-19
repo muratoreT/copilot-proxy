@@ -6,8 +6,20 @@ import httpx
 from httpx import AsyncClient, Response, Request, HTTPStatusError
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from proxy.streaming import forward_request
-from proxy.models import ProxyConfig, LocalAIServerConfig, ListenConfig, DefaultsConfig, RewriteConfig, LoggingConfig
+from proxy.streaming import (
+    _has_tool_messages,
+    _is_empty_stream_completion,
+    forward_request,
+)
+from proxy.models import (
+    DefaultsConfig,
+    ListenConfig,
+    LocalAIServerConfig,
+    LoggingConfig,
+    ProxyConfig,
+    RewriteConfig,
+    StreamingRetryConfig,
+)
 
 
 @pytest.fixture
@@ -153,3 +165,104 @@ class TestContentTypePreservation:
             body={"model": "test", "stream": True, "messages": []},
         )
         assert isinstance(result, StreamingResponse)
+
+
+class TestStreamingRetryDetection:
+    """Detection helpers for empty completions."""
+
+    def test_has_tool_messages(self):
+        assert _has_tool_messages(
+            {"messages": [{"role": "tool", "content": "ok"}]}
+        )
+        assert not _has_tool_messages(
+            {"messages": [{"role": "user", "content": "hi"}]}
+        )
+
+    def test_detect_empty_stream_completion(self):
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices":[],"usage":{"completion_tokens":1}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        assert _is_empty_stream_completion(chunks)
+
+    def test_detect_non_empty_stream_completion(self):
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":5}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        assert not _is_empty_stream_completion(chunks)
+
+
+class TestStreamingRetryFlow:
+    """End-to-end retry behavior for empty completions."""
+
+    @pytest.mark.asyncio
+    async def test_retry_once_after_empty_tool_followup(self):
+        def _make_stream_context(chunks):
+            stream_context = MagicMock()
+            stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+            stream_context.__aexit__ = AsyncMock(return_value=None)
+            stream_context.headers = {"content-type": "text/event-stream"}
+            stream_context.status_code = 200
+
+            async def _aiter_bytes():
+                for chunk in chunks:
+                    yield chunk
+
+            stream_context.aiter_bytes = _aiter_bytes
+            return stream_context
+
+        first_empty = [
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices":[],"usage":{"completion_tokens":1}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        second_valid = [
+            b'data: {"choices":[{"index":0,"delta":{"content":"resolved"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":8}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(
+            side_effect=[
+                _make_stream_context(first_empty),
+                _make_stream_context(second_valid),
+            ]
+        )
+
+        config = ProxyConfig(
+            streaming_retry=StreamingRetryConfig(
+                enabled=True,
+                max_retries=1,
+                only_after_tool_messages=True,
+                retry_delay_ms=0,
+            )
+        )
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={
+                "model": "test",
+                "stream": True,
+                "messages": [
+                    {"role": "assistant", "content": "", "tool_calls": []},
+                    {"role": "tool", "content": "result", "tool_call_id": "1"},
+                ],
+            },
+            proxy_config=config,
+        )
+
+        emitted = []
+        async for chunk in response.body_iterator:
+            emitted.append(chunk)
+
+        combined = b"".join(emitted)
+        assert b"resolved" in combined
+        assert mock_client.stream.call_count == 2

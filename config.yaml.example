@@ -21,6 +21,12 @@ rewrite:
   inject_thinking_budget: false
   thinking_budget: 1024
 
+streaming_retry:
+  enabled: false
+  max_retries: 1
+  only_after_tool_messages: true
+  retry_delay_ms: 100
+
 models:
   "/mnt/models/localAIServer/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":
     max_tokens: 8192

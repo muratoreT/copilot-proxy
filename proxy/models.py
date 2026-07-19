@@ -93,6 +93,31 @@ class DebugConfig(BaseModel):
     )
 
 
+class StreamingRetryConfig(BaseModel):
+    """Configuration for retrying empty streaming completions."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable retry on empty streaming completions.",
+    )
+    max_retries: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description="Max retry attempts for empty streaming completions.",
+    )
+    only_after_tool_messages: bool = Field(
+        default=True,
+        description="Only retry when request includes tool messages.",
+    )
+    retry_delay_ms: int = Field(
+        default=100,
+        ge=0,
+        le=5000,
+        description="Delay between retry attempts in milliseconds.",
+    )
+
+
 class ModelOverride(BaseModel):
     """Per-model override configuration."""
 
@@ -116,6 +141,9 @@ class ProxyConfig(BaseModel):
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     rewrite: RewriteConfig = Field(default_factory=RewriteConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
+    streaming_retry: StreamingRetryConfig = Field(
+        default_factory=StreamingRetryConfig
+    )
     models: Dict[str, ModelOverride] = Field(
         default_factory=dict,
         description="Per-model override map keyed by model name/path.",

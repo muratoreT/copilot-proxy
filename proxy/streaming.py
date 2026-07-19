@@ -1,5 +1,7 @@
 """Streaming passthrough to upstream local AI server."""
 
+import asyncio
+import copy
 import json
 import logging
 import time
@@ -15,6 +17,100 @@ from .models import ProxyConfig
 logger = logging.getLogger(__name__)
 
 
+def _has_tool_messages(body: Optional[dict]) -> bool:
+    """Return True when request history includes one or more tool messages."""
+    if not body:
+        return False
+    messages = body.get("messages", [])
+    if not isinstance(messages, list):
+        return False
+    return any(
+        isinstance(msg, dict) and msg.get("role") == "tool"
+        for msg in messages
+    )
+
+
+def _is_empty_stream_completion(chunks: list[bytes]) -> bool:
+    """Detect empty assistant completion from SSE stream chunks."""
+    if not chunks:
+        return False
+
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    has_content = False
+    has_tool_calls = False
+    finish_reason = None
+    completion_tokens = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        choices = event.get("choices", [])
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
+                if isinstance(delta, dict):
+                    content = delta.get("content")
+                    if isinstance(content, str) and content.strip():
+                        has_content = True
+                    elif isinstance(content, list) and content:
+                        has_content = True
+                    if delta.get("tool_calls"):
+                        has_tool_calls = True
+                fr = choice.get("finish_reason")
+                if fr is not None:
+                    finish_reason = fr
+
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            ct = usage.get("completion_tokens")
+            if isinstance(ct, int):
+                completion_tokens = ct
+
+    return (
+        finish_reason == "stop"
+        and not has_content
+        and not has_tool_calls
+        and completion_tokens is not None
+        and completion_tokens <= 1
+    )
+
+
+def _build_retry_body(body: Optional[dict]) -> Optional[dict]:
+    """Create a retried request body with a non-empty-response hint."""
+    if body is None:
+        return None
+
+    retried = copy.deepcopy(body)
+    messages = retried.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+        retried["messages"] = messages
+
+    messages.append(
+        {
+            "role": "system",
+            "content": (
+                "After tool results, return a non-empty assistant response. "
+                "Do not end with an empty completion."
+            ),
+        }
+    )
+    return retried
+
+
 async def forward_request(
     client: httpx.AsyncClient,
     local_ai_server_url: str,
@@ -23,6 +119,7 @@ async def forward_request(
     headers: dict,
     body: Optional[dict] = None,
     raw_body: Optional[bytes] = None,
+    proxy_config: Optional[ProxyConfig] = None,
     debug_logger: Optional[DebugLogger] = None,
     debug_conv_key: str = "",
     debug_exchange_num: int = 0,
@@ -87,6 +184,7 @@ async def forward_request(
                 url,
                 filtered_headers,
                 json_body,
+                proxy_config,
                 path,
                 debug_logger,
                 debug_conv_key,
@@ -159,6 +257,7 @@ def _handle_streaming_response(
     url: str,
     headers: dict,
     json_body: Optional[dict],
+    proxy_config: Optional[ProxyConfig],
     path: str = "",
     debug_logger: Optional[DebugLogger] = None,
     debug_conv_key: str = "",
@@ -184,6 +283,7 @@ def _handle_streaming_response(
         response = None
         response_headers = {}
         accumulated_body = bytearray()
+        response_status_code = 0
         max_bytes = (
             debug_logger.config.max_response_size_mb * 1024 * 1024
             if debug_logger and debug_logger.enabled
@@ -192,45 +292,77 @@ def _handle_streaming_response(
         truncated = False
         start_time = time.monotonic()
 
+        retry_cfg = proxy_config.streaming_retry if proxy_config else None
+        retry_enabled = bool(retry_cfg and retry_cfg.enabled)
+        if retry_enabled and retry_cfg.only_after_tool_messages:
+            retry_enabled = _has_tool_messages(json_body)
+        retries_left = retry_cfg.max_retries if retry_enabled else 0
+        active_json_body = json_body
+
         try:
-            async with client.stream(
-                method, url, headers=headers, json=json_body
-            ) as response:
-                response_headers = dict(response.headers)
-                # Record response start for debug
-                if debug_logger and debug_logger.enabled and debug_conv_key:
-                    debug_logger.set_response_start_time(
-                        debug_conv_key, debug_exchange_num
-                    )
+            while True:
+                buffered_chunks: list[bytes] = []
+                async with client.stream(
+                    method,
+                    url,
+                    headers=headers,
+                    json=active_json_body,
+                ) as response:
+                    response_headers = dict(response.headers)
+                    response_status_code = response.status_code
+                    # Record response start for debug
+                    if debug_logger and debug_logger.enabled and debug_conv_key:
+                        debug_logger.set_response_start_time(
+                            debug_conv_key, debug_exchange_num
+                        )
 
-                # Stream each chunk verbatim
-                async for chunk in response.aiter_bytes():
-                    yield chunk
-
-                    # Accumulate for debug logging (with size cap)
-                    if (
-                        debug_logger
-                        and debug_logger.enabled
-                        and debug_conv_key
-                        and not truncated
-                    ):
-                        if (
-                            len(accumulated_body) + len(chunk)
-                            <= max_bytes
-                        ):
-                            accumulated_body.extend(chunk)
+                    async for chunk in response.aiter_bytes():
+                        if retry_enabled:
+                            buffered_chunks.append(chunk)
                         else:
-                            accumulated_body.extend(
-                                chunk[: max_bytes - len(accumulated_body)]
-                            )
-                            truncated = True
-                            logger.warning(
-                                "Debug: response truncated for conv=%s "
-                                "exchange=%d (exceeded %d MB limit)",
-                                debug_conv_key,
-                                debug_exchange_num,
-                                debug_logger.config.max_response_size_mb,
-                            )
+                            yield chunk
+
+                        # Accumulate for debug logging (with size cap)
+                        if (
+                            debug_logger
+                            and debug_logger.enabled
+                            and debug_conv_key
+                            and not truncated
+                        ):
+                            if (
+                                len(accumulated_body) + len(chunk)
+                                <= max_bytes
+                            ):
+                                accumulated_body.extend(chunk)
+                            else:
+                                accumulated_body.extend(
+                                    chunk[: max_bytes - len(accumulated_body)]
+                                )
+                                truncated = True
+                                logger.warning(
+                                    "Debug: response truncated for conv=%s "
+                                    "exchange=%d (exceeded %d MB limit)",
+                                    debug_conv_key,
+                                    debug_exchange_num,
+                                    debug_logger.config.max_response_size_mb,
+                                )
+
+                if retry_enabled and _is_empty_stream_completion(buffered_chunks):
+                    if retries_left > 0:
+                        retries_left -= 1
+                        logger.warning(
+                            "Empty completion detected for %s; retrying once",
+                            path or url,
+                        )
+                        active_json_body = _build_retry_body(active_json_body)
+                        if retry_cfg.retry_delay_ms > 0:
+                            await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
+                        continue
+
+                if retry_enabled:
+                    for chunk in buffered_chunks:
+                        yield chunk
+                break
         except httpx.StreamError as e:
             logger.error("Stream error during SSE passthrough: %s", e)
             # Send error as SSE event
@@ -264,7 +396,7 @@ def _handle_streaming_response(
                 await debug_logger.complete_exchange(
                     conv_key=debug_conv_key,
                     exchange_num=debug_exchange_num,
-                    status_code=response.status_code if response else 0,
+                    status_code=response_status_code,
                     headers=clean_headers,
                     body=body_str,
                     duration_ms=duration_ms,

@@ -26,6 +26,12 @@ debug:
   log_dir: logs/debug
   max_response_size_mb: 20
 
+streaming_retry:
+  enabled: true
+  max_retries: 1
+  only_after_tool_messages: true
+  retry_delay_ms: 100
+
 models:
   "qwen/qwen3.6-27b":
     max_tokens: 8192
