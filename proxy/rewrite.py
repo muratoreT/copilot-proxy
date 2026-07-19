@@ -182,13 +182,25 @@ def rewrite_request(
         modified["top_p"] = effective_top_p
         was_modified = True
 
-    # --- thinking_budget injection ---
+    # --- thinking_budget clamping + injection ---
+    max_budget = config.rewrite.max_thinking_budget
+    if max_budget is not None and "thinking_budget" in body:
+        if body["thinking_budget"] > max_budget:
+            modified["thinking_budget"] = max_budget
+            was_modified = True
+
     if (
         config.rewrite.inject_thinking_budget
         and config.rewrite.thinking_budget is not None
     ):
         if "thinking_budget" not in body:
-            modified["thinking_budget"] = config.rewrite.thinking_budget
+            # Inject the configured budget, capped by max if set
+            effective = (
+                min(config.rewrite.thinking_budget, max_budget)
+                if max_budget is not None
+                else config.rewrite.thinking_budget
+            )
+            modified["thinking_budget"] = effective
             was_modified = True
 
     # --- remove_reasoning ---

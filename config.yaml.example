@@ -21,12 +21,14 @@ rewrite:
   remove_reasoning: false
   inject_thinking_budget: false
   thinking_budget: 1024
+  max_thinking_budget: null
 
 streaming_retry:
   enabled: false
   max_retries: 1
   only_after_tool_messages: true
   retry_delay_ms: 100
+  retry_on_thinking_only: false
 
 models:
   "/mnt/models/localAIServer/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":

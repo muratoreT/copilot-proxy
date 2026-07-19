@@ -170,6 +170,89 @@ class TestThinkingBudget:
         assert result["thinking_budget"] == 256
 
 
+class TestThinkingBudgetClamping:
+    """max_thinking_budget clamping: client sends budget > max → clamped."""
+
+    def test_clamps_thinking_budget_when_exceeding_max(self):
+        config = ProxyConfig(
+            listen=ListenConfig(),
+            localAIServer=LocalAIServerConfig(),
+            defaults=DefaultsConfig(max_tokens=4096),
+            rewrite=RewriteConfig(
+                clamp_max_tokens=False,
+                max_thinking_budget=1024,
+            ),
+        )
+        body = {"model": "test", "thinking_budget": 65536, "stream": True}
+        result, modified = rewrite_request(copy.deepcopy(body), config)
+        assert modified is True
+        assert result["thinking_budget"] == 1024
+
+    def test_does_not_clamp_when_under_max(self):
+        config = ProxyConfig(
+            listen=ListenConfig(),
+            localAIServer=LocalAIServerConfig(),
+            defaults=DefaultsConfig(max_tokens=4096),
+            rewrite=RewriteConfig(
+                clamp_max_tokens=False,
+                max_thinking_budget=4096,
+            ),
+        )
+        body = {"model": "test", "thinking_budget": 512, "stream": True}
+        result, modified = rewrite_request(copy.deepcopy(body), config)
+        assert result["thinking_budget"] == 512
+
+    def test_injection_respects_max_ceiling(self):
+        config = ProxyConfig(
+            listen=ListenConfig(),
+            localAIServer=LocalAIServerConfig(),
+            defaults=DefaultsConfig(max_tokens=4096),
+            rewrite=RewriteConfig(
+                clamp_max_tokens=False,
+                inject_thinking_budget=True,
+                thinking_budget=8192,
+                max_thinking_budget=2048,
+            ),
+        )
+        body = {"model": "test", "stream": True}
+        result, modified = rewrite_request(copy.deepcopy(body), config)
+        assert modified is True
+        assert result["thinking_budget"] == 2048
+
+    def test_no_clamping_when_max_not_set(self):
+        config = ProxyConfig(
+            listen=ListenConfig(),
+            localAIServer=LocalAIServerConfig(),
+            defaults=DefaultsConfig(max_tokens=4096),
+            rewrite=RewriteConfig(
+                clamp_max_tokens=False,
+                max_thinking_budget=None,
+            ),
+        )
+        body = {"model": "test", "thinking_budget": 65536, "stream": True}
+        result, modified = rewrite_request(copy.deepcopy(body), config)
+        assert result["thinking_budget"] == 65536
+
+    def test_clamp_and_inject_work_together(self):
+        """Clamp happens first, then inject only if still absent."""
+        config = ProxyConfig(
+            listen=ListenConfig(),
+            localAIServer=LocalAIServerConfig(),
+            defaults=DefaultsConfig(max_tokens=4096),
+            rewrite=RewriteConfig(
+                clamp_max_tokens=False,
+                inject_thinking_budget=True,
+                thinking_budget=4096,
+                max_thinking_budget=2048,
+            ),
+        )
+        # Client sends high budget → clamped to max
+        body = {"model": "test", "thinking_budget": 65536, "stream": True}
+        result, modified = rewrite_request(copy.deepcopy(body), config)
+        assert modified is True
+        assert result["thinking_budget"] == 2048
+
+
 class TestReasoningRemoval:
     """reasoning field removal."""
 

@@ -14,8 +14,8 @@
     <thead>
         <tr>
             <th>#</th>
+            <th>Prompt</th>
             <th>Method</th>
-            <th>Path</th>
             <th>Status</th>
             <th>Duration</th>
             <th>Retry</th>
@@ -30,8 +30,8 @@
                     {{ ex.num }}
                 </a>
             </td>
+            <td class="prompt" title="{{ ex.user_prompt }}">{{ ex.user_prompt }}</td>
             <td><span class="method-badge">{{ ex.request_method }}</span></td>
-            <td class="path">{{ ex.request_path }}</td>
             <td>
                 <span class="status-badge status-{{ ex.response_status_code // 100 }}">
                     {{ ex.response_status_code }}
@@ -39,7 +39,11 @@
             </td>
             <td class="duration">
                 {% if ex.response_duration_ms is not none %}
-                    {{ "%.1f"|format(ex.response_duration_ms) }} ms
+                    {% if ex.response_duration_ms > 999 %}
+                        {{ "%.1f"|format(ex.response_duration_ms / 1000) }} s
+                    {% else %}
+                        {{ "%.1f"|format(ex.response_duration_ms) }} ms
+                    {% endif %}
                 {% else %}
                     —
                 {% endif %}
@@ -53,9 +57,22 @@
                     <span class="no-retry">—</span>
                 {% endif %}
             </td>
-            <td class="timestamp">{{ ex.request_timestamp }}</td>
+            <td class="timestamp" data-timestamp="{{ ex.request_timestamp }}"></td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+<script>
+    document.querySelectorAll('.timestamp[data-timestamp]').forEach(el => {
+        const ts = el.getAttribute('data-timestamp');
+        if (ts) {
+            const date = new Date(ts);
+            if (!isNaN(date.getTime())) {
+                el.textContent = date.toLocaleTimeString() + ' ' + date.toLocaleDateString();
+            } else {
+                el.textContent = ts;
+            }
+        }
+    });
+</script>
 {% endblock %}

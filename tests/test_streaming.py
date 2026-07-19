@@ -7,6 +7,7 @@ from httpx import AsyncClient, Response, Request, HTTPStatusError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from proxy.streaming import (
+    _build_retry_body,
     _has_tool_messages,
     _is_empty_stream_completion,
     forward_request,
@@ -194,6 +195,37 @@ class TestStreamingRetryDetection:
         ]
         assert not _is_empty_stream_completion(chunks)
 
+    def test_retry_hint_merges_into_leading_system_message(self):
+        body = {
+            "messages": [
+                {"role": "system", "content": "Original instructions."},
+                {"role": "user", "content": "Continue."},
+            ]
+        }
+
+        retried = _build_retry_body(body)
+
+        assert retried is not None
+        assert retried["messages"][0]["role"] == "system"
+        assert "Original instructions." in retried["messages"][0]["content"]
+        assert "non-empty assistant response" in retried["messages"][0]["content"]
+        assert all(
+            message["role"] != "system"
+            for message in retried["messages"][1:]
+        )
+        assert body["messages"][0]["content"] == "Original instructions."
+
+    def test_retry_hint_inserts_system_message_first(self):
+        retried = _build_retry_body(
+            {"messages": [{"role": "tool", "content": "result"}]}
+        )
+
+        assert retried is not None
+        assert [message["role"] for message in retried["messages"]] == [
+            "system",
+            "tool",
+        ]
+
 
 class TestStreamingRetryFlow:
     """End-to-end retry behavior for empty completions."""
@@ -266,3 +298,141 @@ class TestStreamingRetryFlow:
         combined = b"".join(emitted)
         assert b"resolved" in combined
         assert mock_client.stream.call_count == 2
+        retry_body = mock_client.stream.call_args_list[1].kwargs["json"]
+        assert retry_body["messages"][0]["role"] == "system"
+        assert all(
+            message["role"] != "system"
+            for message in retry_body["messages"][1:]
+        )
+
+
+class TestThinkingOnlyDetection:
+    """Thinking-only stream detection and retry."""
+
+    def test_detects_thinking_only_stream(self):
+        from proxy.streaming import _is_thinking_only_completion
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning step 1"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning step 2"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+        assert _is_thinking_only_completion(chunks)
+
+    def test_does_not_detect_mixed_thinking_and_text(self):
+        from proxy.streaming import _is_thinking_only_completion
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"text","text":"Here is the answer"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+        assert not _is_thinking_only_completion(chunks)
+
+    def test_does_not_detect_plain_text_stream(self):
+        from proxy.streaming import _is_thinking_only_completion
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"content":"Hello world"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+        assert not _is_thinking_only_completion(chunks)
+
+    def test_does_not_detect_tool_calls_with_thinking(self):
+        from proxy.streaming import _is_thinking_only_completion
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"thinking"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"1","type":"function","function":{"name":"calc"}}]},"finish_reason":null}]}\n\n',
+        ]
+        assert not _is_thinking_only_completion(chunks)
+
+    def test_build_thinking_retry_body_halves_budget(self):
+        from proxy.streaming import _build_thinking_retry_body
+        body = {"model": "test", "thinking_budget": 4096, "stream": True}
+        retry_body = _build_thinking_retry_body(body)
+        assert retry_body["thinking_budget"] == 2048
+
+    def test_build_thinking_retry_body_halves_to_zero_removes_field(self):
+        from proxy.streaming import _build_thinking_retry_body
+        body = {"model": "test", "thinking_budget": 1, "stream": True}
+        retry_body = _build_thinking_retry_body(body)
+        assert "thinking_budget" not in retry_body
+
+    def test_build_thinking_retry_body_preserves_other_fields(self):
+        from proxy.streaming import _build_thinking_retry_body
+        body = {"model": "test", "thinking_budget": 2048, "temperature": 0.7, "stream": True}
+        retry_body = _build_thinking_retry_body(body)
+        assert retry_body["temperature"] == 0.7
+        assert retry_body["model"] == "test"
+        assert retry_body["thinking_budget"] == 1024
+
+    @pytest.mark.asyncio
+    async def test_retry_on_thinking_only_stream(self):
+        from proxy.streaming import _is_thinking_only_completion
+
+        def _make_stream_context(chunks):
+            stream_context = MagicMock()
+            stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+            stream_context.__aexit__ = AsyncMock(return_value=None)
+            stream_context.headers = {"content-type": "text/event-stream"}
+            stream_context.status_code = 200
+
+            async def _aiter_bytes():
+                for chunk in chunks:
+                    yield chunk
+
+            stream_context.aiter_bytes = _aiter_bytes
+            return stream_context
+
+        # First attempt: thinking-only
+        thinking_only = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+        # Second attempt: thinking + text
+        mixed = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"brief"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"text","text":"Answer"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(
+            side_effect=[
+                _make_stream_context(thinking_only),
+                _make_stream_context(mixed),
+            ]
+        )
+
+        config = ProxyConfig(
+            streaming_retry=StreamingRetryConfig(
+                enabled=True,
+                max_retries=2,
+                only_after_tool_messages=False,
+                retry_on_thinking_only=True,
+                retry_delay_ms=0,
+            )
+        )
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={
+                "model": "test",
+                "stream": True,
+                "thinking_budget": 4096,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            proxy_config=config,
+        )
+
+        emitted = []
+        async for chunk in response.body_iterator:
+            emitted.append(chunk)
+
+        combined = b"".join(emitted)
+        assert b"Answer" in combined
+        assert mock_client.stream.call_count == 2
+        # Second call should have halved budget
+        retry_body = mock_client.stream.call_args_list[1].kwargs["json"]
+        assert retry_body["thinking_budget"] == 2048

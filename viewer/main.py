@@ -34,8 +34,8 @@ class ExchangeSummary(BaseModel):
     """Lightweight summary of a single exchange."""
     num: int
     request_method: str = ""
-    request_path: str = ""
     request_timestamp: str = ""
+    user_prompt: str = ""
     response_status_code: Optional[int] = None
     response_duration_ms: Optional[float] = None
     retry_count: int = 0
@@ -64,6 +64,28 @@ def _parse_exchange_file(filepath: Path) -> Dict[str, Any]:
         return {}
 
 
+def _extract_first_user_message(data: Dict[str, Any]) -> str:
+    """Extract the first user message content from an exchange, truncated."""
+    body = data.get("request", {}).get("body", {})
+    messages = body.get("messages", [])
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            # Strip XML tags and whitespace for a clean preview
+            import re
+            text = re.sub(r'<[^>]+>', '', content).strip()
+            if len(text) > 100:
+                text = text[:97] + "..."
+            return text
+        break
+    return ""
+
+
 def _scan_conversations(log_dir: Path) -> List[ConversationInfo]:
     """Scan log directory and build conversation index."""
     conversations: List[ConversationInfo] = []
@@ -88,8 +110,8 @@ def _scan_conversations(log_dir: Path) -> List[ConversationInfo]:
                 ExchangeSummary(
                     num=data.get("exchange", 0),
                     request_method=req.get("method", ""),
-                    request_path=req.get("path", ""),
                     request_timestamp=req.get("timestamp", ""),
+                    user_prompt=_extract_first_user_message(data),
                     response_status_code=resp.get("status_code"),
                     response_duration_ms=resp.get("duration_ms"),
                     retry_count=data.get("retry_count", 0),

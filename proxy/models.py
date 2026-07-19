@@ -79,6 +79,14 @@ class RewriteConfig(BaseModel):
         ge=0,
         description="Thinking budget value to inject when enabled.",
     )
+    max_thinking_budget: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Hard ceiling for thinking_budget. If the client sends a "
+            "thinking_budget higher than this, it is clamped down."
+        ),
+    )
 
 
 class DebugConfig(BaseModel):
@@ -121,6 +129,13 @@ class StreamingRetryConfig(BaseModel):
         ge=0,
         le=5000,
         description="Delay between retry attempts in milliseconds.",
+    )
+    retry_on_thinking_only: bool = Field(
+        default=False,
+        description=(
+            "Retry when the stream produces only thinking content "
+            "with no text output. Independent of only_after_tool_messages."
+        ),
     )
 
 
@@ -178,3 +193,7 @@ class ProxyConfig(BaseModel):
             if override.top_p is not None:
                 return override.top_p
         return self.defaults.top_p
+
+    def get_max_thinking_budget(self) -> Optional[int]:
+        """Resolve the effective max_thinking_budget ceiling."""
+        return self.rewrite.max_thinking_budget

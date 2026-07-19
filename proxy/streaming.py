@@ -99,15 +99,100 @@ def _build_retry_body(body: Optional[dict]) -> Optional[dict]:
         messages = []
         retried["messages"] = messages
 
-    messages.append(
-        {
-            "role": "system",
-            "content": (
-                "After tool results, return a non-empty assistant response. "
-                "Do not end with an empty completion."
-            ),
-        }
+    retry_hint = (
+        "After tool results, return a non-empty assistant response. "
+        "Do not end with an empty completion."
     )
+    if (
+        messages
+        and isinstance(messages[0], dict)
+        and messages[0].get("role") == "system"
+    ):
+        system_content = messages[0].get("content")
+        if isinstance(system_content, list):
+            system_content.append({"type": "text", "text": retry_hint})
+        else:
+            messages[0]["content"] = (
+                f"{system_content}\n\n{retry_hint}"
+                if isinstance(system_content, str) and system_content
+                else retry_hint
+            )
+    else:
+        messages.insert(0, {"role": "system", "content": retry_hint})
+
+    return retried
+
+
+def _is_thinking_only_completion(chunks: list[bytes]) -> bool:
+    """Detect streams that produced only thinking content with no text output.
+
+    Returns True when all content parts are ``type: thinking`` and there is
+    zero ``type: text`` content and no tool calls.
+    """
+    if not chunks:
+        return False
+
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    has_text = False
+    has_tool_calls = False
+    has_thinking = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        choices = event.get("choices", [])
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
+                if isinstance(delta, dict):
+                    # Plain string content counts as text
+                    content = delta.get("content")
+                    if isinstance(content, str) and content.strip():
+                        has_text = True
+                    # Mixed content_parts format (Qwen ext:thinking)
+                    content_parts = delta.get("content_parts", [])
+                    if isinstance(content_parts, list):
+                        for part in content_parts:
+                            if isinstance(part, dict):
+                                if part.get("type") == "thinking":
+                                    has_thinking = True
+                                elif part.get("type") == "text":
+                                    has_text = True
+                    if delta.get("tool_calls"):
+                        has_tool_calls = True
+
+    return has_thinking and not has_text and not has_tool_calls
+
+
+def _build_thinking_retry_body(body: Optional[dict]) -> Optional[dict]:
+    """Create a retry body for thinking-only streams (halve thinking_budget)."""
+    if body is None:
+        return None
+
+    retried = copy.deepcopy(body)
+    current_budget = retried.get("thinking_budget")
+
+    if current_budget is not None and isinstance(current_budget, int):
+        halved = current_budget // 2
+        if halved > 0:
+            retried["thinking_budget"] = halved
+        else:
+            # Budget reached 0 — remove the field entirely
+            retried.pop("thinking_budget", None)
+
     return retried
 
 
@@ -349,6 +434,7 @@ def _handle_streaming_response(
                                     debug_logger.config.max_response_size_mb,
                                 )
 
+                # Empty completion retry
                 if retry_enabled and _is_empty_stream_completion(buffered_chunks):
                     if retries_left > 0:
                         retries_left -= 1
@@ -359,6 +445,24 @@ def _handle_streaming_response(
                             retry_count,
                         )
                         active_json_body = _build_retry_body(active_json_body)
+                        if retry_cfg.retry_delay_ms > 0:
+                            await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
+                        continue
+
+                # Thinking-only retry (independent of only_after_tool_messages gate)
+                thinking_retry_enabled = bool(
+                    retry_cfg and retry_cfg.retry_on_thinking_only
+                )
+                if thinking_retry_enabled and _is_thinking_only_completion(buffered_chunks):
+                    if retries_left > 0:
+                        retries_left -= 1
+                        retry_count += 1
+                        logger.warning(
+                            "Thinking-only stream detected for %s; retrying with halved budget (attempt %d)",
+                            path or url,
+                            retry_count,
+                        )
+                        active_json_body = _build_thinking_retry_body(active_json_body)
                         if retry_cfg.retry_delay_ms > 0:
                             await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
                         continue

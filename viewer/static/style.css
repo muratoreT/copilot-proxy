@@ -139,9 +139,14 @@ footer code { background: var(--bg-surface); padding: 2px 6px; border-radius: 3p
 .status-4 { background: #3a2a1a; color: var(--peach); }
 .status-5 { background: #3a1a1a; color: var(--red); }
 
-/* Timestamps & paths */
+/* Timestamps & prompts */
 .timestamp { color: var(--text-muted); font-family: 'Consolas', 'Courier New', monospace; font-size: 0.85rem; }
-.path { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.85rem; }
+.prompt {
+    max-width: 350px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .duration { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.85rem; }
 
 /* Empty state */
