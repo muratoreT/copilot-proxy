@@ -28,10 +28,7 @@
         </table>
     </details>
 
-    <details class="collapsible" open>
-        <summary>Body</summary>
-        <div class="json-viewer" id="request-body"></div>
-    </details>
+    <div id="request-body-section"></div>
 </section>
 
 <section class="response-section">
@@ -61,10 +58,7 @@
         </table>
     </details>
 
-    <details class="collapsible" open>
-        <summary>Body</summary>
-        <div class="json-viewer" id="response-body"></div>
-    </details>
+    <div id="response-body-section"></div>
 </section>
 {% endblock %}
 
@@ -73,22 +67,22 @@
 <script>
 // Render request body
 {% if exchange.request.body %}
-renderJsonTree(document.getElementById('request-body'), {{ exchange.request.body | tojson }});
+renderBodySections(document.getElementById('request-body-section'), {{ exchange.request.body | tojson }});
 {% else %}
-document.getElementById('request-body').textContent = '(no body)';
+document.getElementById('request-body-section').textContent = '(no body)';
 {% endif %}
 
 // Render response body
 {% if exchange.response.body %}
 const respBody = {{ exchange.response.body | tojson }};
 if (typeof respBody === 'string') {
-    try { renderJsonTree(document.getElementById('response-body'), JSON.parse(respBody)); }
-    catch(e) { renderJsonTree(document.getElementById('response-body'), respBody); }
+    try { renderBodySections(document.getElementById('response-body-section'), JSON.parse(respBody)); }
+    catch(e) { renderBodySections(document.getElementById('response-body-section'), respBody); }
 } else {
-    renderJsonTree(document.getElementById('response-body'), respBody);
+    renderBodySections(document.getElementById('response-body-section'), respBody);
 }
 {% else %}
-document.getElementById('response-body').textContent = '(no body — streaming)';
+document.getElementById('response-body-section').textContent = '(no body — streaming)';
 {% endif %}
 </script>
 {% endblock %}

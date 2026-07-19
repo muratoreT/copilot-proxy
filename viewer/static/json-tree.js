@@ -92,3 +92,109 @@ function jsonType(value) {
     if (Array.isArray(value)) return 'array';
     return typeof value;
 }
+
+/**
+ * Render body content split into a Properties table and collapsible sections
+ * for arrays and large nested objects.
+ * Usage: renderBodySections(containerElement, data)
+ */
+function renderBodySections(container, data) {
+    container.innerHTML = '';
+
+    if (!data || typeof data !== 'object') {
+        container.textContent = '(no body)';
+        return;
+    }
+
+    const scalars = [];
+    const collapsibles = [];
+
+    for (const [key, value] of Object.entries(data)) {
+        const type = jsonType(value);
+
+        if (type === 'array') {
+            collapsibles.push({ key, value, label: capitalize(key), count: value.length });
+        } else if (type === 'object') {
+            const keyCount = Object.keys(value).length;
+            if (keyCount > 3) {
+                collapsibles.push({ key, value, label: capitalize(key), count: keyCount });
+            } else {
+                scalars.push({ key, value });
+            }
+        } else {
+            scalars.push({ key, value });
+        }
+    }
+
+    // Render Properties section (always visible)
+    if (scalars.length > 0) {
+        const propsSection = document.createElement('div');
+        propsSection.className = 'properties-section';
+
+        const propsHeading = document.createElement('h4');
+        propsHeading.className = 'properties-heading';
+        propsHeading.textContent = 'Properties';
+        propsSection.appendChild(propsHeading);
+
+        const propsTable = document.createElement('table');
+        propsTable.className = 'properties-table';
+
+        scalars.forEach(({ key, value }) => {
+            const row = document.createElement('tr');
+            const keyCell = document.createElement('td');
+            keyCell.className = 'property-key';
+            keyCell.textContent = key;
+
+            const valCell = document.createElement('td');
+            valCell.className = 'property-value';
+
+            if (typeof value === 'object' && value !== null) {
+                // Small nested object — render as compact JSON tree
+                const jsonContainer = document.createElement('div');
+                jsonContainer.className = 'json-tree';
+                jsonContainer.appendChild(buildNode(value));
+                valCell.appendChild(jsonContainer);
+            } else if (typeof value === 'string') {
+                // Truncate long strings for display
+                if (value.length > 200) {
+                    const shortText = document.createElement('span');
+                    shortText.textContent = value.substring(0, 200) + '…';
+                    shortText.title = value;
+                    valCell.appendChild(shortText);
+                } else {
+                    valCell.textContent = value;
+                }
+            } else {
+                valCell.textContent = String(value);
+            }
+
+            row.appendChild(keyCell);
+            row.appendChild(valCell);
+            propsTable.appendChild(row);
+        });
+
+        propsSection.appendChild(propsTable);
+        container.appendChild(propsSection);
+    }
+
+    // Render collapsible sections for arrays and large objects
+    collapsibles.forEach(({ label, count, value }) => {
+        const details = document.createElement('details');
+        details.className = 'collapsible';
+
+        const summary = document.createElement('summary');
+        summary.textContent = `${label} (${count})`;
+        details.appendChild(summary);
+
+        const jsonContainer = document.createElement('div');
+        jsonContainer.className = 'json-tree';
+        jsonContainer.appendChild(buildNode(value));
+        details.appendChild(jsonContainer);
+
+        container.appendChild(details);
+    });
+}
+
+function capitalize(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+}
