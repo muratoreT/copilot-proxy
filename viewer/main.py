@@ -189,9 +189,25 @@ async def exchange_detail(request: Request, conv_key: str, exchange_num: int):
             "error.html",
             {"status": 404, "message": f"Exchange {exchange_num} not found."},
         )
+
+    # Find previous and next exchanges in the same conversation
+    conversations = _scan_conversations(LOG_DIR)
+    conv = next((c for c in conversations if c.key == conv_key), None)
+    prev_num = None
+    next_num = None
+
+    if conv:
+        for i, ex in enumerate(conv.exchanges):
+            if ex.num == exchange_num:
+                if i > 0:
+                    prev_num = conv.exchanges[i - 1].num
+                if i < len(conv.exchanges) - 1:
+                    next_num = conv.exchanges[i + 1].num
+                break
+
     return _render(
         "exchange_detail.html",
-        {"conv_key": conv_key, "exchange": exchange},
+        {"conv_key": conv_key, "exchange": exchange, "prev_num": prev_num, "next_num": next_num},
     )
 
 

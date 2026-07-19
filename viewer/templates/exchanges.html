@@ -7,8 +7,12 @@
 {% endblock %}
 
 {% block content %}
-<h2>Conversation: {{ conversation.key }}</h2>
-<p>{{ conversation.exchange_count }} exchange(s)</p>
+<div class="exchange-navigation">
+    <a href="/" class="nav-link back">
+        ✕ Back to Home
+    </a>
+    <span class="nav-info">Conversation: {{ conversation.key }} — {{ conversation.exchange_count }} exchange(s)</span>
+</div>
 
 <table class="data-table">
     <thead>

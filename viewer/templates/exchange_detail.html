@@ -9,6 +9,30 @@
 {% endblock %}
 
 {% block content %}
+<div class="exchange-navigation">
+    <a href="/conversation/{{ conv_key }}" class="nav-link back">
+        ✕ Back to List
+    </a>
+
+    {% if prev_num is not none %}
+    <a href="/conversation/{{ conv_key }}/exchange/{{ prev_num }}" class="nav-link prev">
+        &larr; Exchange {{ prev_num }}
+    </a>
+    {% else %}
+    <span class="nav-link disabled">← First</span>
+    {% endif %}
+
+    <span class="nav-info">Exchange {{ exchange.get('exchange', '?') }}</span>
+
+    {% if next_num is not none %}
+    <a href="/conversation/{{ conv_key }}/exchange/{{ next_num }}" class="nav-link next">
+        Exchange {{ next_num }} &rarr;
+    </a>
+    {% else %}
+    <span class="nav-link disabled">Last →</span>
+    {% endif %}
+</div>
+
 <h2>Exchange {{ exchange.get('exchange', '?') }}</h2>
 
 {% if exchange.get('retry_count', 0) > 0 %}
