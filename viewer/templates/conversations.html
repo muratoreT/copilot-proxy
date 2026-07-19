@@ -17,9 +17,9 @@
     </thead>
     <tbody>
         {% for conv in conversations %}
-        <tr>
+        <tr class="clickable" onclick="window.location.href='/conversation/{{ conv.key }}'">
             <td>
-                <a href="/conversation/{{ conv.key }}">{{ conv.key }}</a>
+                <a href="/conversation/{{ conv.key }}" onclick="event.stopPropagation()">{{ conv.key }}</a>
             </td>
             <td>{{ conv.exchange_count }}</td>
             <td class="timestamp">{{ conv.first_timestamp }}</td>

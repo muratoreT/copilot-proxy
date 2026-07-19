@@ -23,9 +23,9 @@
     </thead>
     <tbody>
         {% for ex in conversation.exchanges %}
-        <tr>
+        <tr class="clickable" onclick="window.location.href='/conversation/{{ conversation.key }}/exchange/{{ ex.num }}'">
             <td>
-                <a href="/conversation/{{ conversation.key }}/exchange/{{ ex.num }}">
+                <a href="/conversation/{{ conversation.key }}/exchange/{{ ex.num }}" onclick="event.stopPropagation()">
                     {{ ex.num }}
                 </a>
             </td>
