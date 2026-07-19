@@ -34,6 +34,100 @@ def _extract_prompt_length(body: Dict[str, Any]) -> int:
     return 0
 
 
+def _extract_tool_vision_parts(
+    content: Any,
+) -> Tuple[list[str], list[Dict[str, Any]]]:
+    """Extract text and valid OpenAI image parts from tool message content."""
+    if not isinstance(content, list):
+        return [], []
+
+    text_parts = []
+    image_parts = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            text_parts.append(part["text"])
+            continue
+
+        image_url = part.get("image_url")
+        if part.get("type") != "image_url" or not isinstance(image_url, dict):
+            continue
+
+        url = image_url.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+
+        normalized_image_url = {"url": url}
+        if image_url.get("detail") in {"auto", "low", "high"}:
+            normalized_image_url["detail"] = image_url["detail"]
+        image_parts.append(
+            {"type": "image_url", "image_url": normalized_image_url}
+        )
+
+    return text_parts, image_parts
+
+
+def _normalize_tool_vision_messages(
+    messages: Any,
+) -> Tuple[Any, bool]:
+    """Move tool-result images to user messages accepted by LM Studio."""
+    if not isinstance(messages, list):
+        return messages, False
+
+    normalized_messages = []
+    pending_vision_parts = []
+    was_modified = False
+
+    def flush_pending_vision() -> None:
+        if not pending_vision_parts:
+            return
+        normalized_messages.append(
+            {"role": "user", "content": list(pending_vision_parts)}
+        )
+        pending_vision_parts.clear()
+
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            flush_pending_vision()
+            normalized_messages.append(message)
+            continue
+
+        text_parts, image_parts = _extract_tool_vision_parts(
+            message.get("content")
+        )
+        if not image_parts:
+            normalized_messages.append(message)
+            continue
+
+        normalized_message = copy.deepcopy(message)
+        normalized_message["content"] = (
+            "\n".join(text_parts)
+            if text_parts
+            else "Tool completed successfully; visual output follows."
+        )
+        normalized_messages.append(normalized_message)
+
+        tool_call_id = message.get("tool_call_id")
+        tool_label = (
+            f"tool call {tool_call_id}"
+            if isinstance(tool_call_id, str) and tool_call_id
+            else "the preceding tool call"
+        )
+        pending_vision_parts.append(
+            {
+                "type": "text",
+                "text": f"Visual output returned by {tool_label}.",
+            }
+        )
+        pending_vision_parts.extend(image_parts)
+        was_modified = True
+
+    flush_pending_vision()
+    return normalized_messages, was_modified
+
+
 def rewrite_request(
     body: Dict[str, Any], config: ProxyConfig
 ) -> Tuple[Dict[str, Any], bool]:
@@ -48,6 +142,15 @@ def rewrite_request(
     was_modified = False
 
     model_name = _extract_model(body)
+
+    # --- tool-result vision normalization ---
+    if config.rewrite.normalize_tool_vision and "messages" in modified:
+        normalized_messages, messages_modified = _normalize_tool_vision_messages(
+            modified["messages"]
+        )
+        if messages_modified:
+            modified["messages"] = normalized_messages
+            was_modified = True
 
     # --- max_tokens clamping ---
     if config.rewrite.clamp_max_tokens:

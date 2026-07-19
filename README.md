@@ -18,6 +18,7 @@ GitHub Copilot
 
 - **Transparent proxying** — forwards all OpenAI-compatible API calls to the local AI server unchanged
 - **Request rewriting** — configurable `max_tokens` clamping, temperature/top_p defaults, thinking budget injection
+- **Tool vision compatibility** — moves tool-result images into LM Studio-compatible user messages
 - **Model-specific overrides** — per-model configuration in YAML
 - **Hot-reload config** — watches `config.yaml` for changes and reloads without restart
 - **SSE streaming passthrough** — preserves Server-Sent Events verbatim (no parsing, no buffering)
@@ -74,6 +75,7 @@ defaults:
 
 rewrite:
   clamp_max_tokens: true
+  normalize_tool_vision: true
   remove_reasoning: false
   inject_thinking_budget: false
   thinking_budget: 1024
@@ -99,6 +101,7 @@ models:
 | `defaults`      | `temperature`            | float  | `0.1`                   | Default temperature                  |
 | `defaults`      | `top_p`                  | float  | `1.0`                   | Default top_p                        |
 | `rewrite`       | `clamp_max_tokens`       | bool   | `true`                  | Clamp max_tokens to configured limit |
+| `rewrite`       | `normalize_tool_vision`  | bool   | `false`                 | Move tool images to user messages    |
 | `rewrite`       | `remove_reasoning`       | bool   | `false`                 | Strip reasoning fields               |
 | `rewrite`       | `inject_thinking_budget` | bool   | `false`                 | Inject thinking_budget field         |
 | `rewrite`       | `thinking_budget`        | int    | `1024`                  | Thinking budget value                |
@@ -116,7 +119,9 @@ models:
 
 2. **Temperature/top_p defaults**: Injected only if the client did not specify a value
 
-3. **Thinking budget**: If `inject_thinking_budget` is `true`, a `thinking_budget` field is added when absent
+3. **Tool vision normalization**: If `normalize_tool_vision` is `true`, image parts are removed from `tool` messages and appended after the complete tool-result block in a multimodal `user` message. This preserves tool-call ordering while using the message shape accepted by LM Studio.
+
+4. **Thinking budget**: If `inject_thinking_budget` is `true`, a `thinking_budget` field is added when absent
 
 ---
 

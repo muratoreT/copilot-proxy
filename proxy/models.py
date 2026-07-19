@@ -60,6 +60,12 @@ class RewriteConfig(BaseModel):
         default=True,
         description="If True, clamp max_tokens to the configured limit.",
     )
+    normalize_tool_vision: bool = Field(
+        default=False,
+        description=(
+            "Move image content from tool messages into compatible user messages."
+        ),
+    )
     remove_reasoning: bool = Field(
         default=False,
         description="If True, strip reasoning-related fields.",

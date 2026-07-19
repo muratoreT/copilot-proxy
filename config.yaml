@@ -17,6 +17,7 @@ defaults:
 
 rewrite:
   clamp_max_tokens: true
+  normalize_tool_vision: true
   remove_reasoning: false
   inject_thinking_budget: false
   thinking_budget: 1024

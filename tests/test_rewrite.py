@@ -202,3 +202,153 @@ class TestReasoningRemoval:
         body = {"model": "test", "stream": True, "reasoning": "some reasoning"}
         result, modified = rewrite_request(copy.deepcopy(body), config)
         assert result["reasoning"] == "some reasoning"
+
+
+class TestToolVisionNormalization:
+    """Image-bearing tool results are translated for LM Studio."""
+
+    @staticmethod
+    def _config(enabled=True):
+        return ProxyConfig(
+            defaults=DefaultsConfig(
+                max_tokens=None,
+                temperature=None,
+                top_p=None,
+            ),
+            rewrite=RewriteConfig(
+                clamp_max_tokens=False,
+                normalize_tool_vision=enabled,
+            ),
+        )
+
+    def test_moves_tool_image_to_following_user_message(self):
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "screenshot-1"}],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "screenshot-1",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/jpeg;base64,abc",
+                                "media_type": "image/jpeg",
+                                "detail": "high",
+                            },
+                        },
+                        {"type": "text", "text": "Screenshot captured."},
+                    ],
+                },
+                {"role": "assistant", "content": "Next response"},
+            ]
+        }
+        original = copy.deepcopy(body)
+
+        result, modified = rewrite_request(body, self._config())
+
+        assert modified is True
+        assert [message["role"] for message in result["messages"]] == [
+            "assistant",
+            "tool",
+            "user",
+            "assistant",
+        ]
+        assert result["messages"][1]["content"] == "Screenshot captured."
+        assert result["messages"][2] == {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Visual output returned by tool call screenshot-1.",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/jpeg;base64,abc",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+        assert body == original
+
+    def test_keeps_parallel_tool_results_consecutive(self):
+        body = {
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "image-tool",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "text-tool",
+                    "content": "Text result",
+                },
+                {"role": "assistant", "content": "Next response"},
+            ]
+        }
+
+        result, modified = rewrite_request(body, self._config())
+
+        assert modified is True
+        assert [message["role"] for message in result["messages"]] == [
+            "tool",
+            "tool",
+            "user",
+            "assistant",
+        ]
+        assert result["messages"][0]["content"].startswith("Tool completed")
+        assert result["messages"][1]["content"] == "Text result"
+
+    def test_leaves_tool_images_unchanged_when_disabled(self):
+        body = {
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "image-tool",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result, modified = rewrite_request(body, self._config(enabled=False))
+
+        assert modified is False
+        assert result == body
+
+    def test_leaves_user_vision_message_unchanged(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe this image."},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        },
+                    ],
+                }
+            ]
+        }
+
+        result, modified = rewrite_request(body, self._config())
+
+        assert modified is False
+        assert result == body
