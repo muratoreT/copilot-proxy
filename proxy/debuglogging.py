@@ -16,6 +16,16 @@ from .models import DebugConfig
 
 logger = logging.getLogger(__name__)
 
+# Headers that contain sensitive data and should be stripped before logging
+SENSITIVE_HEADERS = frozenset(
+    "authorization proxy-authorization cookie set-cookie x-api-key "
+    "x-forwarded-for x-real-ip sec-ch-ua sec-ch-ua-platform "
+    "sec-ch-ua-mobile sec-ch-ua-full-version-list sec-ch-ua-arch "
+    "sec-ch-ua-model sec-ch-ua-bitness sec-ch-ua-wow64 "
+    "sec-ch-ua-full-version sec-ch-ua-preference-levels sec-ch-ua-fledging ".
+    split()
+)
+
 
 @dataclass
 class ExchangeData:
@@ -43,6 +53,11 @@ class ExchangeData:
 
     # Internal
     _response_start_time: Optional[float] = None
+
+
+def strip_sensitive_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Remove sensitive headers from a headers dict (case-insensitive match)."""
+    return {k: v for k, v in headers.items() if k.lower() not in SENSITIVE_HEADERS}
 
 
 class DebugLogger:
@@ -130,6 +145,9 @@ class DebugLogger:
             conv_dir = self._conversation_dir(conv_key)
             conv_dir.mkdir(parents=True, exist_ok=True)
 
+            # Strip sensitive headers before storing
+            safe_headers = strip_sensitive_headers(headers)
+
             # Create exchange data
             exchange = ExchangeData(
                 exchange_num=exchange_num,
@@ -137,7 +155,7 @@ class DebugLogger:
                 request_timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                 request_method=method,
                 request_path=path,
-                request_headers=headers,
+                request_headers=safe_headers,
                 request_body=body,
             )
 
@@ -193,7 +211,7 @@ class DebugLogger:
                 "%Y-%m-%dT%H:%M:%S.%fZ"
             )
             target.response_status_code = status_code
-            target.response_headers = headers
+            target.response_headers = strip_sensitive_headers(headers)
             target.response_body = body
             target.response_duration_ms = round(duration_ms, 2)
             target.retry_count = retry_count
