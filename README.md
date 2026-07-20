@@ -172,19 +172,26 @@ models:
 
 #### `streaming_retry` — Automatic Retry on Empty Streams
 
-| Key                        | Type | Default | Description                                                   |
-| -------------------------- | ---- | ------- | ------------------------------------------------------------- |
-| `enabled`                  | bool | `false` | Enable retry on empty streaming completions                   |
-| `max_retries`              | int  | `1`     | Max retry attempts (0–3)                                      |
-| `only_after_tool_messages` | bool | `true`  | Only retry when the request includes tool messages            |
-| `retry_delay_ms`           | int  | `100`   | Delay between retry attempts (0–5000 ms)                      |
-| `retry_on_thinking_only`   | bool | `false` | Retry when the stream produces only thinking content, no text |
+| Key                          | Type                       | Default  | Description                                                      |
+| ---------------------------- | -------------------------- | -------- | ---------------------------------------------------------------- |
+| `enabled`                    | bool                       | `false`  | Enable retry on empty streaming completions                      |
+| `max_retries`                | int                        | `1`      | Max retry attempts (0–3)                                         |
+| `only_after_tool_messages`   | bool                       | `true`   | Only retry when the request includes tool messages               |
+| `retry_delay_ms`             | int                        | `100`    | Delay between retry attempts (0–5000 ms)                         |
+| `retry_on_thinking_only`     | bool                       | `false`  | Retry when the stream produces only thinking content, no text    |
+| `streaming_mode`             | `"hybrid"` \| `"buffered"` | `hybrid` | Streaming mode: `hybrid` (low-latency) or `buffered` (legacy)    |
+| `empty_detection_timeout_ms` | int (hybrid only)          | `1000`   | Timeout for empty-stream detection in hybrid mode (200–10000 ms) |
 
 > **When to change:**
 >
 > - Enable `enabled` if your upstream server occasionally returns empty streams (common with some local AI servers under load).
 > - Set `only_after_tool_messages: false` to retry all empty streams, not just those following tool calls.
 > - Enable `retry_on_thinking_only` if the model sometimes gets stuck producing only internal reasoning with no output.
+>
+> **Streaming modes:**
+>
+> - **`hybrid` (default)**: Buffers chunks only while waiting within `empty_detection_timeout_ms`. As soon as content is detected, the buffer is flushed and streaming continues with minimal latency. If the timeout fires with no content, the buffer is discarded and a retry is triggered. This avoids the latency penalty of full-response buffering while still catching empty responses.
+> - **`buffered`**: Buffers the entire response before forwarding. Required for reliable retry but adds latency equal to the full response generation time. Use this if you need maximum reliability and can tolerate the delay.
 
 #### `models` — Per-Model Overrides
 
@@ -225,12 +232,15 @@ models:
 When `streaming_retry.enabled` is `true`:
 
 1. The proxy monitors streaming responses for empty completions
-2. If an empty response is detected and retry conditions are met:
+2. Behavior depends on `streaming_mode`:
+   - **`hybrid`**: Uses a timeout window (`empty_detection_timeout_ms`). Chunks are buffered only during this window. If content arrives, the buffer is flushed immediately and streaming continues. If the timeout fires with no content, the proxy triggers a retry.
+   - **`buffered`**: Buffers the entire response, then checks if it is empty before forwarding.
+3. If an empty response is detected and retry conditions are met:
    - `only_after_tool_messages` is `false`, OR the request contains tool messages
    - `retry_on_thinking_only` is `false`, OR the stream contained only thinking content
-3. The request is re-sent to the upstream server after `retry_delay_ms`
-4. Retries continue up to `max_retries` attempts
-5. If all retries fail, the empty response is passed through to the client
+4. The request is re-sent to the upstream server after `retry_delay_ms`
+5. Retries continue up to `max_retries` attempts
+6. If all retries fail, the empty response is passed through to the client
 
 ### How Debug Logging Works
 

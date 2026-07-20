@@ -1,6 +1,6 @@
 """Pydantic models for proxy configuration."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -135,6 +135,24 @@ class StreamingRetryConfig(BaseModel):
         description=(
             "Retry when the stream produces only thinking content "
             "with no text output. Independent of only_after_tool_messages."
+        ),
+    )
+    streaming_mode: Literal["buffered", "hybrid"] = Field(
+        default="hybrid",
+        description=(
+            "Streaming mode: 'buffered' buffers the entire response before "
+            "sending to client (safe but higher latency). 'hybrid' streams "
+            "chunks immediately but buffers during a timeout window to detect "
+            "empty responses for retry."
+        ),
+    )
+    empty_detection_timeout_ms: int = Field(
+        default=1000,
+        ge=200,
+        le=10000,
+        description=(
+            "Timeout window in milliseconds for hybrid mode to detect empty "
+            "streams before flushing buffered chunks to the client."
         ),
     )
 

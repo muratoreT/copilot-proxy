@@ -29,6 +29,8 @@ streaming_retry:
   only_after_tool_messages: true
   retry_delay_ms: 100
   retry_on_thinking_only: false
+  streaming_mode: hybrid
+  empty_detection_timeout_ms: 1000
 
 models:
   "/mnt/models/localAIServer/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":

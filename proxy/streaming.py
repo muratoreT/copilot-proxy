@@ -196,6 +196,80 @@ def _build_thinking_retry_body(body: Optional[dict]) -> Optional[dict]:
     return retried
 
 
+def _chunk_has_content(chunk: bytes) -> bool:
+    """Return True if an SSE chunk carries meaningful text content.
+
+    Checks for non-empty ``delta.content`` strings or ``content_parts`` with
+    ``type: text``.  Thinking-only parts do *not* count as content.
+    """
+    text = chunk.decode("utf-8", errors="replace")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        choices = event.get("choices", [])
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
+                if not isinstance(delta, dict):
+                    continue
+                content = delta.get("content")
+                if isinstance(content, str) and content.strip():
+                    return True
+                if isinstance(content, list) and content:
+                    return True
+                content_parts = delta.get("content_parts", [])
+                if isinstance(content_parts, list):
+                    for part in content_parts:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            return True
+                if delta.get("tool_calls"):
+                    return True
+    return False
+
+
+def _chunk_has_thinking(chunk: bytes) -> bool:
+    """Return True if an SSE chunk carries thinking content.
+
+    Detects ``content_parts`` entries with ``type: thinking``.
+    """
+    text = chunk.decode("utf-8", errors="replace")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        choices = event.get("choices", [])
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
+                if not isinstance(delta, dict):
+                    continue
+                content_parts = delta.get("content_parts", [])
+                if isinstance(content_parts, list):
+                    for part in content_parts:
+                        if isinstance(part, dict) and part.get("type") == "thinking":
+                            return True
+    return False
+
+
 async def forward_request(
     client: httpx.AsyncClient,
     local_ai_server_url: str,
@@ -386,6 +460,18 @@ def _handle_streaming_response(
         active_json_body = json_body
         retry_count = 0  # Track how many retries were actually performed
 
+        # Streaming mode: buffered (default legacy) or hybrid
+        streaming_mode = (
+            retry_cfg.streaming_mode
+            if retry_cfg and retry_cfg.streaming_mode
+            else "hybrid"
+        )
+        empty_timeout_s = (
+            retry_cfg.empty_detection_timeout_ms / 1000.0
+            if retry_cfg
+            else 1.0
+        )
+
         try:
             while True:
                 buffered_chunks: list[bytes] = []
@@ -403,36 +489,162 @@ def _handle_streaming_response(
                             debug_conv_key, debug_exchange_num
                         )
 
-                    async for chunk in response.aiter_bytes():
-                        if retry_enabled:
-                            buffered_chunks.append(chunk)
-                        else:
-                            yield chunk
+                    if streaming_mode == "hybrid" and retry_enabled:
+                        # ---- HYBRID MODE ----
+                        # Buffer chunks during a timeout window. If meaningful
+                        # content arrives within the window, flush buffer and
+                        # switch to passthrough. If timeout fires with no
+                        # content, discard buffer and retry upstream.
+                        hybrid_buffer: list[bytes] = []
+                        content_detected = False
+                        thinking_detected = False
+                        window_closed = False  # True once we flush or timeout
 
-                        # Accumulate for debug logging (with size cap)
-                        if (
-                            debug_logger
-                            and debug_logger.enabled
-                            and debug_conv_key
-                            and not truncated
-                        ):
-                            if (
-                                len(accumulated_body) + len(chunk)
-                                <= max_bytes
-                            ):
-                                accumulated_body.extend(chunk)
+                        # Create an async iterator that supports timeout
+                        stream_iter = response.aiter_bytes()
+
+                        while True:
+                            try:
+                                if not window_closed:
+                                    # Wait for next chunk with timeout
+                                    try:
+                                        chunk = await asyncio.wait_for(
+                                            stream_iter.__anext__(),
+                                            timeout=empty_timeout_s,
+                                        )
+                                    except asyncio.TimeoutError:
+                                        # Timeout fired — no content arrived
+                                        window_closed = True
+                                        logger.debug(
+                                            "Hybrid timeout after %.1f ms with "
+                                            "no content for %s",
+                                            empty_timeout_s * 1000,
+                                            path or url,
+                                        )
+                                        # Drain remaining stream silently
+                                        try:
+                                            while True:
+                                                await stream_iter.__anext__()
+                                        except StopAsyncIteration:
+                                            pass
+                                        break  # exit stream loop
+
+                                    except StopAsyncIteration:
+                                        break  # normal stream end
+
+                                    # Process chunk within timeout window
+                                    if _chunk_has_content(chunk):
+                                        content_detected = True
+                                    if _chunk_has_thinking(chunk):
+                                        thinking_detected = True
+
+                                    hybrid_buffer.append(chunk)
+
+                                    # Accumulate for debug logging
+                                    if (
+                                        debug_logger
+                                        and debug_logger.enabled
+                                        and debug_conv_key
+                                        and not truncated
+                                    ):
+                                        if (
+                                            len(accumulated_body) + len(chunk)
+                                            <= max_bytes
+                                        ):
+                                            accumulated_body.extend(chunk)
+                                        else:
+                                            accumulated_body.extend(
+                                                chunk[: max_bytes - len(accumulated_body)]
+                                            )
+                                            truncated = True
+                                            logger.warning(
+                                                "Debug: response truncated for conv=%s "
+                                                "exchange=%d (exceeded %d MB limit)",
+                                                debug_conv_key,
+                                                debug_exchange_num,
+                                                debug_logger.config.max_response_size_mb,
+                                            )
+
+                                    if content_detected:
+                                        # Flush buffer — content arrived
+                                        window_closed = True
+                                        for bc in hybrid_buffer:
+                                            yield bc
+                                        hybrid_buffer.clear()
+                                else:
+                                    # Window closed — passthrough mode
+                                    try:
+                                        chunk = await stream_iter.__anext__()
+                                    except StopAsyncIteration:
+                                        break
+
+                                    yield chunk
+
+                                    # Accumulate for debug logging
+                                    if (
+                                        debug_logger
+                                        and debug_logger.enabled
+                                        and debug_conv_key
+                                        and not truncated
+                                    ):
+                                        if (
+                                            len(accumulated_body) + len(chunk)
+                                            <= max_bytes
+                                        ):
+                                            accumulated_body.extend(chunk)
+                                        else:
+                                            accumulated_body.extend(
+                                                chunk[: max_bytes - len(accumulated_body)]
+                                            )
+                                            truncated = True
+                                            logger.warning(
+                                                "Debug: response truncated for conv=%s "
+                                                "exchange=%d (exceeded %d MB limit)",
+                                                debug_conv_key,
+                                                debug_exchange_num,
+                                                debug_logger.config.max_response_size_mb,
+                                            )
+                            except httpx.StreamError:
+                                raise
+
+                        # Determine buffered_chunks for retry detection
+                        if not content_detected and hybrid_buffer:
+                            buffered_chunks = hybrid_buffer
+                        else:
+                            buffered_chunks = []
+
+                    else:
+                        # ---- BUFFERED MODE (legacy) or retry disabled ----
+                        async for chunk in response.aiter_bytes():
+                            if retry_enabled:
+                                buffered_chunks.append(chunk)
                             else:
-                                accumulated_body.extend(
-                                    chunk[: max_bytes - len(accumulated_body)]
-                                )
-                                truncated = True
-                                logger.warning(
-                                    "Debug: response truncated for conv=%s "
-                                    "exchange=%d (exceeded %d MB limit)",
-                                    debug_conv_key,
-                                    debug_exchange_num,
-                                    debug_logger.config.max_response_size_mb,
-                                )
+                                yield chunk
+
+                            # Accumulate for debug logging (with size cap)
+                            if (
+                                debug_logger
+                                and debug_logger.enabled
+                                and debug_conv_key
+                                and not truncated
+                            ):
+                                if (
+                                    len(accumulated_body) + len(chunk)
+                                    <= max_bytes
+                                ):
+                                    accumulated_body.extend(chunk)
+                                else:
+                                    accumulated_body.extend(
+                                        chunk[: max_bytes - len(accumulated_body)]
+                                    )
+                                    truncated = True
+                                    logger.warning(
+                                        "Debug: response truncated for conv=%s "
+                                        "exchange=%d (exceeded %d MB limit)",
+                                        debug_conv_key,
+                                        debug_exchange_num,
+                                        debug_logger.config.max_response_size_mb,
+                                    )
 
                 # Empty completion retry
                 if retry_enabled and _is_empty_stream_completion(buffered_chunks):
@@ -467,7 +679,7 @@ def _handle_streaming_response(
                             await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
                         continue
 
-                if retry_enabled:
+                if retry_enabled and streaming_mode == "buffered":
                     for chunk in buffered_chunks:
                         yield chunk
                 break

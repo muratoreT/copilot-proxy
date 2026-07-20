@@ -1,13 +1,15 @@
 [Unit]
 Description=Copilot Proxy - OpenAI-compatible reverse proxy for a local AI server
-After=network.target
+Wants=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/home/ubuntuai/copilot-proxy/config.yaml
 
 [Service]
 Type=simple
 User=ubuntuai
 Group=ubuntuai
-WorkingDirectory=/opt/copilot-proxy
-ExecStart=/opt/copilot-proxy/venv/bin/python proxy_entry.py
+WorkingDirectory=/home/ubuntuai/copilot-proxy
+ExecStart=/home/ubuntuai/copilot-proxy/venv/bin/python /home/ubuntuai/copilot-proxy/proxy_entry.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -22,7 +24,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/copilot-proxy/logs
+ReadWritePaths=/home/ubuntuai/copilot-proxy/logs
 PrivateTmp=true
 
 [Install]

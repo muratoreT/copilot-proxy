@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from proxy.streaming import (
     _build_retry_body,
+    _chunk_has_content,
+    _chunk_has_thinking,
     _has_tool_messages,
     _is_empty_stream_completion,
     forward_request,
@@ -436,3 +438,312 @@ class TestThinkingOnlyDetection:
         # Second call should have halved budget
         retry_body = mock_client.stream.call_args_list[1].kwargs["json"]
         assert retry_body["thinking_budget"] == 2048
+
+
+class TestChunkContentHelpers:
+    """Per-chunk content and thinking detection helpers."""
+
+    def test_chunk_has_content_plain_text(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+        assert _chunk_has_content(chunk)
+
+    def test_chunk_has_content_list_content(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"hi"}]},"finish_reason":null}]}\n\n'
+        assert _chunk_has_content(chunk)
+
+    def test_chunk_has_content_tool_calls(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"1"}]},"finish_reason":null}]}\n\n'
+        assert _chunk_has_content(chunk)
+
+    def test_chunk_has_content_content_parts_text(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"text","text":"hi"}]},"finish_reason":null}]}\n\n'
+        assert _chunk_has_content(chunk)
+
+    def test_chunk_has_content_empty_delta(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        assert not _chunk_has_content(chunk)
+
+    def test_chunk_has_content_thinking_only(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning"}]},"finish_reason":null}]}\n\n'
+        assert not _chunk_has_content(chunk)
+
+    def test_chunk_has_content_DONE(self):
+        chunk = b"data: [DONE]\n\n"
+        assert not _chunk_has_content(chunk)
+
+    def test_chunk_has_thinking_true(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning"}]},"finish_reason":null}]}\n\n'
+        assert _chunk_has_thinking(chunk)
+
+    def test_chunk_has_thinking_false_for_text(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"text","text":"hi"}]},"finish_reason":null}]}\n\n'
+        assert not _chunk_has_thinking(chunk)
+
+    def test_chunk_has_thinking_false_for_plain_content(self):
+        chunk = b'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+        assert not _chunk_has_thinking(chunk)
+
+
+class TestHybridStreamingMode:
+    """Hybrid streaming mode: buffer during timeout, flush on content, retry on empty."""
+
+    @pytest.mark.asyncio
+    async def test_hybrid_flushes_on_content(self):
+        """When content arrives within timeout, hybrid mode flushes buffer and streams."""
+
+        def _make_stream_context(chunks):
+            stream_context = MagicMock()
+            stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+            stream_context.__aexit__ = AsyncMock(return_value=None)
+            stream_context.headers = {"content-type": "text/event-stream"}
+            stream_context.status_code = 200
+
+            async def _aiter_bytes():
+                for chunk in chunks:
+                    yield chunk
+
+            stream_context.aiter_bytes = _aiter_bytes
+            return stream_context
+
+        valid_stream = [
+            b'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(
+            side_effect=[_make_stream_context(valid_stream)]
+        )
+
+        config = ProxyConfig(
+            streaming_retry=StreamingRetryConfig(
+                enabled=True,
+                max_retries=1,
+                only_after_tool_messages=False,
+                retry_delay_ms=0,
+                streaming_mode="hybrid",
+                empty_detection_timeout_ms=5000,
+            )
+        )
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={
+                "model": "test",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            proxy_config=config,
+        )
+
+        emitted = []
+        async for chunk in response.body_iterator:
+            emitted.append(chunk)
+
+        combined = b"".join(emitted)
+        assert b"hello" in combined
+        assert b" world" in combined
+        assert mock_client.stream.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_hybrid_retries_on_empty_stream(self):
+        """When stream ends with no content within timeout, hybrid mode retries."""
+
+        def _make_stream_context(chunks):
+            stream_context = MagicMock()
+            stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+            stream_context.__aexit__ = AsyncMock(return_value=None)
+            stream_context.headers = {"content-type": "text/event-stream"}
+            stream_context.status_code = 200
+
+            async def _aiter_bytes():
+                for chunk in chunks:
+                    yield chunk
+
+            stream_context.aiter_bytes = _aiter_bytes
+            return stream_context
+
+        empty_stream = [
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+            b'data: {"choices":[],"usage":{"completion_tokens":1}}\n\n',
+        ]
+        valid_stream = [
+            b'data: {"choices":[{"index":0,"delta":{"content":"resolved"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(
+            side_effect=[
+                _make_stream_context(empty_stream),
+                _make_stream_context(valid_stream),
+            ]
+        )
+
+        config = ProxyConfig(
+            streaming_retry=StreamingRetryConfig(
+                enabled=True,
+                max_retries=1,
+                only_after_tool_messages=False,
+                retry_delay_ms=0,
+                streaming_mode="hybrid",
+                empty_detection_timeout_ms=5000,
+            )
+        )
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={
+                "model": "test",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            proxy_config=config,
+        )
+
+        emitted = []
+        async for chunk in response.body_iterator:
+            emitted.append(chunk)
+
+        combined = b"".join(emitted)
+        assert b"resolved" in combined
+        assert mock_client.stream.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_hybrid_retries_on_thinking_only(self):
+        """When stream produces only thinking within timeout, hybrid mode retries."""
+
+        def _make_stream_context(chunks):
+            stream_context = MagicMock()
+            stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+            stream_context.__aexit__ = AsyncMock(return_value=None)
+            stream_context.headers = {"content-type": "text/event-stream"}
+            stream_context.status_code = 200
+
+            async def _aiter_bytes():
+                for chunk in chunks:
+                    yield chunk
+
+            stream_context.aiter_bytes = _aiter_bytes
+            return stream_context
+
+        thinking_only = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"thinking","thinking":"reasoning"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+        valid_stream = [
+            b'data: {"choices":[{"index":0,"delta":{"content_parts":[{"type":"text","text":"Answer"}]},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(
+            side_effect=[
+                _make_stream_context(thinking_only),
+                _make_stream_context(valid_stream),
+            ]
+        )
+
+        config = ProxyConfig(
+            streaming_retry=StreamingRetryConfig(
+                enabled=True,
+                max_retries=1,
+                only_after_tool_messages=False,
+                retry_on_thinking_only=True,
+                retry_delay_ms=0,
+                streaming_mode="hybrid",
+                empty_detection_timeout_ms=5000,
+            )
+        )
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={
+                "model": "test",
+                "stream": True,
+                "thinking_budget": 4096,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            proxy_config=config,
+        )
+
+        emitted = []
+        async for chunk in response.body_iterator:
+            emitted.append(chunk)
+
+        combined = b"".join(emitted)
+        assert b"Answer" in combined
+        assert mock_client.stream.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_buffered_mode_still_works(self):
+        """Buffered mode (streaming_mode=buffered) still works as before."""
+
+        def _make_stream_context(chunks):
+            stream_context = MagicMock()
+            stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+            stream_context.__aexit__ = AsyncMock(return_value=None)
+            stream_context.headers = {"content-type": "text/event-stream"}
+            stream_context.status_code = 200
+
+            async def _aiter_bytes():
+                for chunk in chunks:
+                    yield chunk
+
+            stream_context.aiter_bytes = _aiter_bytes
+            return stream_context
+
+        valid_stream = [
+            b'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(
+            side_effect=[_make_stream_context(valid_stream)]
+        )
+
+        config = ProxyConfig(
+            streaming_retry=StreamingRetryConfig(
+                enabled=True,
+                max_retries=1,
+                only_after_tool_messages=False,
+                retry_delay_ms=0,
+                streaming_mode="buffered",
+            )
+        )
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={
+                "model": "test",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            proxy_config=config,
+        )
+
+        emitted = []
+        async for chunk in response.body_iterator:
+            emitted.append(chunk)
+
+        combined = b"".join(emitted)
+        assert b"hello" in combined
+        assert mock_client.stream.call_count == 1

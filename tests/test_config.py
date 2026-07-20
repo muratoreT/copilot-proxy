@@ -134,3 +134,62 @@ class TestModelOverrideResolution:
         )
         # Falls back to defaults.temperature (default is 0.1)
         assert config.get_model_temperature("my-model") == 0.1
+
+
+class TestStreamingRetryConfig:
+    """Streaming retry config validation including hybrid mode fields."""
+
+    def test_streaming_retry_defaults(self):
+        from proxy.models import StreamingRetryConfig
+        cfg = StreamingRetryConfig()
+        assert cfg.enabled is False
+        assert cfg.streaming_mode == "hybrid"
+        assert cfg.empty_detection_timeout_ms == 1000
+
+    def test_streaming_retry_hybrid_mode(self):
+        from proxy.models import StreamingRetryConfig
+        cfg = StreamingRetryConfig(enabled=True, streaming_mode="hybrid", empty_detection_timeout_ms=2000)
+        assert cfg.streaming_mode == "hybrid"
+        assert cfg.empty_detection_timeout_ms == 2000
+
+    def test_streaming_retry_buffered_mode(self):
+        from proxy.models import StreamingRetryConfig
+        cfg = StreamingRetryConfig(enabled=True, streaming_mode="buffered")
+        assert cfg.streaming_mode == "buffered"
+
+    def test_streaming_retry_invalid_mode_rejected(self):
+        from proxy.models import StreamingRetryConfig
+        with pytest.raises(Exception):
+            StreamingRetryConfig(enabled=True, streaming_mode="invalid")
+
+    def test_empty_detection_timeout_ms_below_min_rejected(self):
+        from proxy.models import StreamingRetryConfig
+        with pytest.raises(Exception):
+            StreamingRetryConfig(empty_detection_timeout_ms=100)
+
+    def test_empty_detection_timeout_ms_above_max_rejected(self):
+        from proxy.models import StreamingRetryConfig
+        with pytest.raises(Exception):
+            StreamingRetryConfig(empty_detection_timeout_ms=20000)
+
+    @pytest.mark.asyncio
+    async def test_load_hybrid_config_from_yaml(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml_content = """
+listen:
+  host: 127.0.0.1
+  port: 8081
+localAIServer:
+  url: http://127.0.0.1:8000
+streaming_retry:
+  enabled: true
+  streaming_mode: hybrid
+  empty_detection_timeout_ms: 1500
+"""
+            f.write(yaml_content)
+            f.flush()
+            config = await load_config(pathlib.Path(f.name))
+            assert config.streaming_retry.enabled is True
+            assert config.streaming_retry.streaming_mode == "hybrid"
+            assert config.streaming_retry.empty_detection_timeout_ms == 1500
+        os.unlink(f.name)
