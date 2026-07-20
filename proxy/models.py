@@ -115,6 +115,14 @@ class DebugConfig(BaseModel):
         ge=1,
         description="Hours between automatic cleanup runs.",
     )
+    max_conversations: int = Field(
+        default=100,
+        ge=1,
+        description=(
+            "Max number of in-memory conversation keys to retain. "
+            "Oldest conversations are evicted when the limit is reached."
+        ),
+    )
 
 
 class StreamingRetryConfig(BaseModel):

@@ -17,8 +17,8 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         # Track active connections
-        self.metrics.increment_active_connections()
-        self.metrics.increment_requests()
+        await self.metrics.increment_active_connections()
+        await self.metrics.increment_requests()
 
         start_time = time.monotonic()
 
@@ -29,13 +29,13 @@ class TimingMiddleware(BaseHTTPMiddleware):
             latency_ms = (time.monotonic() - start_time) * 1000
 
             # Record metrics
-            self.metrics.record_latency(request.url.path, latency_ms)
+            await self.metrics.record_latency(request.url.path, latency_ms)
 
             # Track errors
             if response.status_code >= 400:
-                self.metrics.increment_forward_errors(response.status_code)
+                await self.metrics.increment_forward_errors(response.status_code)
 
             return response
 
         finally:
-            self.metrics.decrement_active_connections()
+            await self.metrics.decrement_active_connections()

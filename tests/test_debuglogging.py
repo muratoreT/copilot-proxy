@@ -488,3 +488,216 @@ class TestCleanup:
 
         assert deleted == 1
         assert not conv_dir.exists()
+
+
+class TestConversationEviction:
+    """Test LRU eviction of in-memory conversation keys."""
+
+    @pytest.mark.asyncio
+    async def test_eviction_removes_oldest_conversation(self, tmp_path):
+        """Oldest (least recently used) conversation is evicted when limit is reached."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=3)
+        debug_logger = DebugLogger(config)
+
+        bodies = [
+            {"messages": [{"role": "user", "content": f"Message {i}"}]}
+            for i in range(4)
+        ]
+
+        # Add 4 conversations — exceeds limit of 3
+        keys = []
+        for body in bodies:
+            conv_key, _ = await debug_logger.start_exchange(
+                body=body,
+                client_ip="127.0.0.1",
+                method="POST",
+                path="/v1/chat/completions",
+                headers={},
+            )
+            keys.append(conv_key)
+
+        # Should have exactly 3 conversations in memory
+        assert len(debug_logger._exchanges) == 3
+        assert len(debug_logger._counters) == 3
+
+        # Oldest key should have been evicted
+        assert keys[0] not in debug_logger._exchanges
+        assert keys[1] in debug_logger._exchanges
+        assert keys[2] in debug_logger._exchanges
+        assert keys[3] in debug_logger._exchanges
+
+    @pytest.mark.asyncio
+    async def test_eviction_respects_lru_order(self, tmp_path):
+        """Recently accessed conversations are kept, even if they're not the newest."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=2)
+        debug_logger = DebugLogger(config)
+
+        body_a = {"messages": [{"role": "user", "content": "Conversation A"}]}
+        body_b = {"messages": [{"role": "user", "content": "Conversation B"}]}
+        body_c = {"messages": [{"role": "user", "content": "Conversation C"}]}
+
+        # Add A and B
+        key_a, _ = await debug_logger.start_exchange(
+            body=body_a, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+        key_b, _ = await debug_logger.start_exchange(
+            body=body_b, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        # Access A again to mark it as recently used
+        _, _ = await debug_logger.start_exchange(
+            body=body_a, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        # Add C — should evict B (least recently used), not A
+        key_c, _ = await debug_logger.start_exchange(
+            body=body_c, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        assert len(debug_logger._exchanges) == 2
+        assert key_a in debug_logger._exchanges  # Recently accessed
+        assert key_b not in debug_logger._exchanges  # Evicted (LRU)
+        assert key_c in debug_logger._exchanges  # Newest
+
+    @pytest.mark.asyncio
+    async def test_eviction_cleans_up_locks(self, tmp_path):
+        """Evicted conversations have their locks cleaned up too."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=2)
+        debug_logger = DebugLogger(config)
+
+        body_a = {"messages": [{"role": "user", "content": "A"}]}
+        body_b = {"messages": [{"role": "user", "content": "B"}]}
+        body_c = {"messages": [{"role": "user", "content": "C"}]}
+
+        key_a, _ = await debug_logger.start_exchange(
+            body=body_a, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+        key_b, _ = await debug_logger.start_exchange(
+            body=body_b, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        # Both locks exist
+        assert key_a in debug_logger._locks
+        assert key_b in debug_logger._locks
+
+        # Add C — evicts A
+        _, _ = await debug_logger.start_exchange(
+            body=body_c, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        # A's lock should be cleaned up
+        assert key_a not in debug_logger._locks
+
+    @pytest.mark.asyncio
+    async def test_no_eviction_under_limit(self, tmp_path):
+        """Conversations under the limit are never evicted."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=10)
+        debug_logger = DebugLogger(config)
+
+        bodies = [
+            {"messages": [{"role": "user", "content": f"Msg {i}"}]}
+            for i in range(5)
+        ]
+
+        keys = []
+        for body in bodies:
+            conv_key, _ = await debug_logger.start_exchange(
+                body=body, client_ip="127.0.0.1", method="POST",
+                path="/v1/chat/completions", headers={},
+            )
+            keys.append(conv_key)
+
+        # All 5 should still be present
+        assert len(debug_logger._exchanges) == 5
+        for key in keys:
+            assert key in debug_logger._exchanges
+
+    @pytest.mark.asyncio
+    async def test_eviction_at_exact_limit(self, tmp_path):
+        """Adding a conversation at exactly the limit triggers eviction."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=2)
+        debug_logger = DebugLogger(config)
+
+        body_a = {"messages": [{"role": "user", "content": "A"}]}
+        body_b = {"messages": [{"role": "user", "content": "B"}]}
+
+        key_a, _ = await debug_logger.start_exchange(
+            body=body_a, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+        key_b, _ = await debug_logger.start_exchange(
+            body=body_b, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        # At limit — both present
+        assert len(debug_logger._exchanges) == 2
+
+        # Reuse A (touching it) — no new key, no eviction
+        _, _ = await debug_logger.start_exchange(
+            body=body_a, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+        assert len(debug_logger._exchanges) == 2
+        assert key_a in debug_logger._exchanges
+        assert key_b in debug_logger._exchanges
+
+    @pytest.mark.asyncio
+    async def test_eviction_prevents_unbounded_growth(self, tmp_path):
+        """Memory stays bounded even with many unique conversations."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=50)
+        debug_logger = DebugLogger(config)
+
+        # Simulate 200 unique conversations
+        for i in range(200):
+            body = {"messages": [{"role": "user", "content": f"Unique message {i}"}]}
+            await debug_logger.start_exchange(
+                body=body, client_ip="127.0.0.1", method="POST",
+                path="/v1/chat/completions", headers={},
+            )
+
+        # Should never exceed max_conversations
+        assert len(debug_logger._exchanges) == 50
+        assert len(debug_logger._counters) == 50
+
+    @pytest.mark.asyncio
+    async def test_complete_exchange_touches_conversation(self, tmp_path):
+        """Completing an exchange marks the conversation as recently used."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), max_conversations=2)
+        debug_logger = DebugLogger(config)
+
+        body_a = {"messages": [{"role": "user", "content": "A"}]}
+        body_b = {"messages": [{"role": "user", "content": "B"}]}
+        body_c = {"messages": [{"role": "user", "content": "C"}]}
+
+        # Add A and B
+        key_a, num_a = await debug_logger.start_exchange(
+            body=body_a, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+        key_b, num_b = await debug_logger.start_exchange(
+            body=body_b, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        # Complete A — should touch it
+        await debug_logger.complete_exchange(
+            conv_key=key_a, exchange_num=num_a, status_code=200,
+            headers={}, body="{}", duration_ms=100.0,
+        )
+
+        # Add C — should evict B (now LRU), not A (just completed)
+        _, _ = await debug_logger.start_exchange(
+            body=body_c, client_ip="127.0.0.1", method="POST",
+            path="/v1/chat/completions", headers={},
+        )
+
+        assert key_a in debug_logger._exchanges
+        assert key_b not in debug_logger._exchanges

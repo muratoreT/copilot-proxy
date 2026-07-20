@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,10 +73,11 @@ class DebugLogger:
         self.log_dir = Path(config.log_dir)
         self.max_response_bytes = config.max_response_size_mb * 1024 * 1024
 
-        # Per-conversation state
-        self._counters: Dict[str, int] = {}
-        self._exchanges: Dict[str, List[ExchangeData]] = {}
+        # Per-conversation state — OrderedDict for LRU eviction
+        self._counters: OrderedDict[str, int] = OrderedDict()
+        self._exchanges: OrderedDict[str, List[ExchangeData]] = OrderedDict()
         self._locks: Dict[str, asyncio.Lock] = {}
+        self._max_conversations = config.max_conversations
 
         if self.enabled:
             self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +88,30 @@ class DebugLogger:
         if key not in self._locks:
             self._locks[key] = asyncio.Lock()
         return self._locks[key]
+
+    def _touch_conversation(self, key: str) -> None:
+        """Mark a conversation as recently used (move to end of OrderedDict)."""
+        if key in self._counters:
+            self._counters.move_to_end(key)
+        if key in self._exchanges:
+            self._exchanges.move_to_end(key)
+
+    def _evict_old_conversations(self) -> None:
+        """Evict oldest conversations when the in-memory key count meets or exceeds the limit.
+
+        Called before a new key is added, so `>=` ensures we stay at or below the limit
+        after the new key is inserted.
+        """
+        target = self._max_conversations
+        while len(self._exchanges) >= target:
+            oldest_key = self._exchanges.popitem(last=False)
+            self._counters.pop(oldest_key, None)
+            self._locks.pop(oldest_key, None)
+            logger.debug(
+                "Debug: evicted old conversation key=%s (limit=%d)",
+                oldest_key,
+                target,
+            )
 
     @staticmethod
     def compute_conversation_key(body: Dict[str, Any], client_ip: str) -> str:
@@ -137,9 +163,15 @@ class DebugLogger:
         lock = self._get_lock(conv_key)
 
         async with lock:
+            # Track new conversation key and evict if over limit
+            if conv_key not in self._counters:
+                self._counters[conv_key] = 0
+                self._evict_old_conversations()
+
             # Increment counter
-            self._counters[conv_key] = self._counters.get(conv_key, 0) + 1
+            self._counters[conv_key] += 1
             exchange_num = self._counters[conv_key]
+            self._touch_conversation(conv_key)
 
             # Ensure conversation folder exists
             conv_dir = self._conversation_dir(conv_key)
@@ -191,6 +223,7 @@ class DebugLogger:
         lock = self._get_lock(conv_key)
 
         async with lock:
+            self._touch_conversation(conv_key)
             exchanges = self._exchanges.get(conv_key, [])
 
             # Find the matching exchange

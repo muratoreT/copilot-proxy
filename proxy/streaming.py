@@ -5,7 +5,7 @@ import copy
 import json
 import logging
 import time
-from typing import Optional
+from typing import Generator, Optional
 
 import httpx
 from fastapi import Response
@@ -15,6 +15,29 @@ from .debuglogging import DebugLogger
 from .models import ProxyConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _iterate_sse_events(body_bytes: bytes) -> Generator[dict, None, None]:
+    """Yield parsed JSON dicts from SSE ``data:`` lines.
+
+    Shared generator to avoid duplicating the SSE parsing loop across
+    multiple functions.
+    """
+    text = body_bytes.decode("utf-8", errors="replace")
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+
+        try:
+            yield json.loads(payload)
+        except json.JSONDecodeError:
+            continue
 
 
 def _has_tool_messages(body: Optional[dict]) -> bool:
@@ -35,26 +58,12 @@ def _is_empty_stream_completion(chunks: list[bytes]) -> bool:
     if not chunks:
         return False
 
-    text = b"".join(chunks).decode("utf-8", errors="replace")
     has_content = False
     has_tool_calls = False
     finish_reason = None
     completion_tokens = None
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("data: "):
-            continue
-
-        payload = line[6:].strip()
-        if not payload or payload == "[DONE]":
-            continue
-
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-
+    for event in _iterate_sse_events(b"".join(chunks)):
         choices = event.get("choices", [])
         if isinstance(choices, list):
             for choice in choices:
@@ -132,25 +141,11 @@ def _is_thinking_only_completion(chunks: list[bytes]) -> bool:
     if not chunks:
         return False
 
-    text = b"".join(chunks).decode("utf-8", errors="replace")
     has_text = False
     has_tool_calls = False
     has_thinking = False
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("data: "):
-            continue
-
-        payload = line[6:].strip()
-        if not payload or payload == "[DONE]":
-            continue
-
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-
+    for event in _iterate_sse_events(b"".join(chunks)):
         choices = event.get("choices", [])
         if isinstance(choices, list):
             for choice in choices:
@@ -196,6 +191,102 @@ def _build_thinking_retry_body(body: Optional[dict]) -> Optional[dict]:
     return retried
 
 
+def _extract_sse_metadata(event: dict) -> Optional[dict]:
+    """Extract metadata (id, model, created) from the first SSE event."""
+    return {
+        k: v
+        for k, v in event.items()
+        if k in ("id", "model", "created")
+    }
+
+
+def _extract_sse_usage(event: dict) -> Optional[dict]:
+    """Extract usage data from an SSE event (last one wins)."""
+    if "usage" in event and isinstance(event["usage"], dict):
+        return event["usage"]
+    return None
+
+
+def _extract_sse_content(
+    delta: dict,
+    content_parts: list[str],
+    reasoning_parts: list[str],
+) -> None:
+    """Extract content and reasoning from a delta, appending to accumulators."""
+    # Plain string content
+    cn = delta.get("content")
+    if isinstance(cn, str) and cn.strip():
+        content_parts.append(cn)
+
+    # Reasoning content
+    reasoning = delta.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        reasoning_parts.append(reasoning)
+
+    # content_parts array (Qwen ext:thinking format)
+    content_parts_arr = delta.get("content_parts", [])
+    if isinstance(content_parts_arr, list):
+        for part in content_parts_arr:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            part_content = part.get("content", "")
+            if isinstance(part_content, str) and part_content.strip():
+                if part_type == "thinking":
+                    reasoning_parts.append(part_content)
+                elif part_type == "text":
+                    content_parts.append(part_content)
+
+
+def _extract_sse_tool_calls(
+    delta: dict, tool_calls_map: dict[int, dict]
+) -> None:
+    """Extract tool calls from a delta, merging into tool_calls_map."""
+    tc_list = delta.get("tool_calls", [])
+    if not isinstance(tc_list, list):
+        return
+
+    for tc in tc_list:
+        if not isinstance(tc, dict):
+            continue
+        idx = tc.get("index")
+        if idx is None:
+            continue
+        if idx not in tool_calls_map:
+            tool_calls_map[idx] = {}
+
+        # id comes incrementally across chunks and should be concatenated
+        tc_id = tc.get("id")
+        if tc_id is not None and isinstance(tc_id, str):
+            existing_id = tool_calls_map[idx].get("id", "")
+            tool_calls_map[idx]["id"] = existing_id + tc_id
+
+        # type is set once and should not be concatenated
+        tc_type = tc.get("type")
+        if tc_type is not None:
+            tool_calls_map[idx]["type"] = tc_type
+
+        # name and arguments may be nested under "function" (OpenAI format)
+        # or at the top level; handle both
+        func = tc.get("function")
+        if isinstance(func, dict):
+            for key in ("name", "arguments"):
+                if key in func and func[key] is not None:
+                    existing = tool_calls_map[idx].get(key)
+                    if existing and isinstance(existing, str):
+                        tool_calls_map[idx][key] = existing + func[key]
+                    else:
+                        tool_calls_map[idx][key] = func[key]
+        else:
+            for key in ("name", "arguments"):
+                if key in tc and tc[key] is not None:
+                    existing = tool_calls_map[idx].get(key)
+                    if existing and isinstance(existing, str):
+                        tool_calls_map[idx][key] = existing + tc[key]
+                    else:
+                        tool_calls_map[idx][key] = tc[key]
+
+
 def _parse_sse_to_reconstructed(body_bytes: bytes) -> dict:
     """Parse raw SSE byte stream into a structured response dict.
 
@@ -209,33 +300,13 @@ def _parse_sse_to_reconstructed(body_bytes: bytes) -> dict:
     usage: Optional[dict] = None
     metadata: Optional[dict] = None
 
-    text = body_bytes.decode("utf-8", errors="replace")
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("data: "):
-            continue
-
-        payload = line[6:].strip()
-        if not payload or payload == "[DONE]":
-            continue
-
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-
+    for event in _iterate_sse_events(body_bytes):
         # Capture metadata from first event
         if metadata is None:
-            metadata = {
-                k: v
-                for k, v in event.items()
-                if k in ("id", "model", "created")
-            }
+            metadata = _extract_sse_metadata(event)
 
         # Capture usage (last one wins)
-        if "usage" in event and isinstance(event["usage"], dict):
-            usage = event["usage"]
+        usage = _extract_sse_usage(event) or usage
 
         choices = event.get("choices", [])
         if not isinstance(choices, list):
@@ -254,69 +325,8 @@ def _parse_sse_to_reconstructed(body_bytes: bytes) -> dict:
             if not isinstance(delta, dict):
                 continue
 
-            # Plain string content
-            cn = delta.get("content")
-            if isinstance(cn, str) and cn.strip():
-                content_parts.append(cn)
-
-            # Reasoning content
-            reasoning = delta.get("reasoning")
-            if isinstance(reasoning, str) and reasoning.strip():
-                reasoning_parts.append(reasoning)
-
-            # content_parts array (Qwen ext:thinking format)
-            content_parts_arr = delta.get("content_parts", [])
-            if isinstance(content_parts_arr, list):
-                for part in content_parts_arr:
-                    if not isinstance(part, dict):
-                        continue
-                    part_type = part.get("type")
-                    part_content = part.get("content", "")
-                    if isinstance(part_content, str) and part_content.strip():
-                        if part_type == "thinking":
-                            reasoning_parts.append(part_content)
-                        elif part_type == "text":
-                            content_parts.append(part_content)
-
-            # Tool calls
-            tc_list = delta.get("tool_calls", [])
-            if isinstance(tc_list, list):
-                for tc in tc_list:
-                    if not isinstance(tc, dict):
-                        continue
-                    idx = tc.get("index")
-                    if idx is None:
-                        continue
-                    if idx not in tool_calls_map:
-                        tool_calls_map[idx] = {}
-                    # id comes incrementally across chunks and should be concatenated
-                    tc_id = tc.get("id")
-                    if tc_id is not None and isinstance(tc_id, str):
-                        existing_id = tool_calls_map[idx].get("id", "")
-                        tool_calls_map[idx]["id"] = existing_id + tc_id
-                    # type is set once and should not be concatenated
-                    tc_type = tc.get("type")
-                    if tc_type is not None:
-                        tool_calls_map[idx]["type"] = tc_type
-                    # name and arguments may be nested under "function" (OpenAI format)
-                    # or at the top level; handle both
-                    func = tc.get("function")
-                    if isinstance(func, dict):
-                        for key in ("name", "arguments"):
-                            if key in func and func[key] is not None:
-                                existing = tool_calls_map[idx].get(key)
-                                if existing and isinstance(existing, str):
-                                    tool_calls_map[idx][key] = existing + func[key]
-                                else:
-                                    tool_calls_map[idx][key] = func[key]
-                    else:
-                        for key in ("name", "arguments"):
-                            if key in tc and tc[key] is not None:
-                                existing = tool_calls_map[idx].get(key)
-                                if existing and isinstance(existing, str):
-                                    tool_calls_map[idx][key] = existing + tc[key]
-                                else:
-                                    tool_calls_map[idx][key] = tc[key]
+            _extract_sse_content(delta, content_parts, reasoning_parts)
+            _extract_sse_tool_calls(delta, tool_calls_map)
 
     tool_calls = [
         tool_calls_map[i] for i in sorted(tool_calls_map)
@@ -569,6 +579,93 @@ async def forward_request(
         )
 
 
+class _RetryResult:
+    """Holds the outcome of a retry loop for a streaming request."""
+
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+        self.response_headers: dict = {}
+        self.response_status_code: int = 0
+        self.retry_count: int = 0
+
+
+async def _execute_with_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: dict,
+    json_body: Optional[dict],
+    retry_cfg: Optional["StreamingRetryConfig"],
+    path: str = "",
+) -> _RetryResult:
+    """Execute a streaming request with retry logic for empty/thinking-only completions.
+
+    Returns a `_RetryResult` with the final chunks, response metadata, and retry count.
+    """
+    result = _RetryResult()
+
+    retry_enabled = bool(retry_cfg and retry_cfg.enabled)
+    if retry_enabled and retry_cfg.only_after_tool_messages:
+        retry_enabled = _has_tool_messages(json_body)
+    max_retries = retry_cfg.max_retries if retry_enabled else 0
+    retries_left = max_retries
+    active_json_body = json_body
+
+    thinking_retry_enabled = bool(
+        retry_cfg and retry_cfg.retry_on_thinking_only
+    )
+
+    while True:
+        buffered_chunks: list[bytes] = []
+        async with client.stream(
+            method,
+            url,
+            headers=headers,
+            json=active_json_body,
+        ) as response:
+            result.response_headers = dict(response.headers)
+            result.response_status_code = response.status_code
+
+            async for chunk in response.aiter_bytes():
+                buffered_chunks.append(chunk)
+
+        result.chunks = buffered_chunks
+
+        # Empty completion retry
+        if retry_enabled and _is_empty_stream_completion(buffered_chunks):
+            if retries_left > 0:
+                retries_left -= 1
+                result.retry_count += 1
+                logger.warning(
+                    "Empty completion detected for %s; retrying (attempt %d)",
+                    path or url,
+                    result.retry_count,
+                )
+                active_json_body = _build_retry_body(active_json_body)
+                if retry_cfg.retry_delay_ms > 0:
+                    await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
+                continue
+
+        # Thinking-only retry (independent of only_after_tool_messages gate)
+        if thinking_retry_enabled and _is_thinking_only_completion(buffered_chunks):
+            if retries_left > 0:
+                retries_left -= 1
+                result.retry_count += 1
+                logger.warning(
+                    "Thinking-only stream detected for %s; retrying with halved budget (attempt %d)",
+                    path or url,
+                    result.retry_count,
+                )
+                active_json_body = _build_thinking_retry_body(active_json_body)
+                if retry_cfg.retry_delay_ms > 0:
+                    await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
+                continue
+
+        break
+
+    return result
+
+
 def _handle_streaming_response(
     client: httpx.AsyncClient,
     method: str,
@@ -597,11 +694,11 @@ def _handle_streaming_response(
         "content-length",
     }
 
+    retry_cfg = proxy_config.streaming_retry if proxy_config else None
+
     async def generate():
         response = None
-        response_headers = {}
         accumulated_body = bytearray()
-        response_status_code = 0
         max_bytes = (
             debug_logger.config.max_response_size_mb * 1024 * 1024
             if debug_logger and debug_logger.enabled
@@ -610,100 +707,45 @@ def _handle_streaming_response(
         truncated = False
         start_time = time.monotonic()
 
-        retry_cfg = proxy_config.streaming_retry if proxy_config else None
-        retry_enabled = bool(retry_cfg and retry_cfg.enabled)
-        if retry_enabled and retry_cfg.only_after_tool_messages:
-            retry_enabled = _has_tool_messages(json_body)
-        max_retries = retry_cfg.max_retries if retry_enabled else 0
-        retries_left = max_retries
-        active_json_body = json_body
-        retry_count = 0  # Track how many retries were actually performed
-
         try:
-            while True:
-                buffered_chunks: list[bytes] = []
-                async with client.stream(
-                    method,
-                    url,
-                    headers=headers,
-                    json=active_json_body,
-                ) as response:
-                    response_headers = dict(response.headers)
-                    response_status_code = response.status_code
-                    # Record response start for debug
-                    if debug_logger and debug_logger.enabled and debug_conv_key:
-                        debug_logger.set_response_start_time(
-                            debug_conv_key, debug_exchange_num
-                        )
+            retry_result = await _execute_with_retry(
+                client, method, url, headers, json_body, retry_cfg, path
+            )
 
-                    async for chunk in response.aiter_bytes():
-                        if retry_enabled:
-                            buffered_chunks.append(chunk)
-                        else:
-                            yield chunk
-
-                        # Accumulate for debug logging (with size cap)
-                        if (
-                            debug_logger
-                            and debug_logger.enabled
-                            and debug_conv_key
-                            and not truncated
-                        ):
-                            if (
-                                len(accumulated_body) + len(chunk)
-                                <= max_bytes
-                            ):
-                                accumulated_body.extend(chunk)
-                            else:
-                                accumulated_body.extend(
-                                    chunk[: max_bytes - len(accumulated_body)]
-                                )
-                                truncated = True
-                                logger.warning(
-                                    "Debug: response truncated for conv=%s "
-                                    "exchange=%d (exceeded %d MB limit)",
-                                    debug_conv_key,
-                                    debug_exchange_num,
-                                    debug_logger.config.max_response_size_mb,
-                                )
-
-                # Empty completion retry
-                if retry_enabled and _is_empty_stream_completion(buffered_chunks):
-                    if retries_left > 0:
-                        retries_left -= 1
-                        retry_count += 1
-                        logger.warning(
-                            "Empty completion detected for %s; retrying (attempt %d)",
-                            path or url,
-                            retry_count,
-                        )
-                        active_json_body = _build_retry_body(active_json_body)
-                        if retry_cfg.retry_delay_ms > 0:
-                            await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
-                        continue
-
-                # Thinking-only retry (independent of only_after_tool_messages gate)
-                thinking_retry_enabled = bool(
-                    retry_cfg and retry_cfg.retry_on_thinking_only
+            # Record response start for debug
+            if debug_logger and debug_logger.enabled and debug_conv_key:
+                debug_logger.set_response_start_time(
+                    debug_conv_key, debug_exchange_num
                 )
-                if thinking_retry_enabled and _is_thinking_only_completion(buffered_chunks):
-                    if retries_left > 0:
-                        retries_left -= 1
-                        retry_count += 1
-                        logger.warning(
-                            "Thinking-only stream detected for %s; retrying with halved budget (attempt %d)",
-                            path or url,
-                            retry_count,
-                        )
-                        active_json_body = _build_thinking_retry_body(active_json_body)
-                        if retry_cfg.retry_delay_ms > 0:
-                            await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
-                        continue
 
-                if retry_enabled:
-                    for chunk in buffered_chunks:
-                        yield chunk
-                break
+            # Stream chunks to client and accumulate for debug logging
+            for chunk in retry_result.chunks:
+                yield chunk
+
+                # Accumulate for debug logging (with size cap)
+                if (
+                    debug_logger
+                    and debug_logger.enabled
+                    and debug_conv_key
+                    and not truncated
+                ):
+                    if (
+                        len(accumulated_body) + len(chunk)
+                        <= max_bytes
+                    ):
+                        accumulated_body.extend(chunk)
+                    else:
+                        accumulated_body.extend(
+                            chunk[: max_bytes - len(accumulated_body)]
+                        )
+                        truncated = True
+                        logger.warning(
+                            "Debug: response truncated for conv=%s "
+                            "exchange=%d (exceeded %d MB limit)",
+                            debug_conv_key,
+                            debug_exchange_num,
+                            debug_logger.config.max_response_size_mb,
+                        )
         except httpx.StreamError as e:
             logger.error("Stream error during SSE passthrough: %s", e)
             # Send error as SSE event
@@ -733,26 +775,19 @@ def _handle_streaming_response(
                 # Strip hop-by-hop headers from response headers
                 clean_headers = {
                     k: v
-                    for k, v in response_headers.items()
+                    for k, v in retry_result.response_headers.items()
                     if k.lower() not in response_hop_by_hop
                 }
 
                 await debug_logger.complete_exchange(
                     conv_key=debug_conv_key,
                     exchange_num=debug_exchange_num,
-                    status_code=response_status_code,
+                    status_code=retry_result.response_status_code,
                     headers=clean_headers,
                     body=reconstructed,
                     duration_ms=duration_ms,
-                    retry_count=retry_count,
+                    retry_count=retry_result.retry_count,
                 )
-
-            # Ensure the response is closed if something went wrong
-            if response is not None:
-                try:
-                    await response.aclose()
-                except Exception:
-                    pass
 
     return StreamingResponse(
         generate(),

@@ -1,6 +1,7 @@
 """YAML configuration loader with hot-reload support."""
 
 import asyncio
+import copy
 import logging
 import pathlib
 from typing import Optional
@@ -10,13 +11,6 @@ import yaml
 from .models import ProxyConfig
 
 logger = logging.getLogger(__name__)
-
-# Global config instance (updated atomically via lock).
-_current_config: Optional[ProxyConfig] = None
-_config_lock = asyncio.Lock()
-
-# Path to the config file.
-_config_path: Optional[pathlib.Path] = None
 
 
 def _load_yaml(path: pathlib.Path) -> dict:
@@ -32,38 +26,43 @@ def _load_yaml(path: pathlib.Path) -> dict:
 
 async def load_config(path: pathlib.Path) -> ProxyConfig:
     """Load configuration from a YAML file and validate it."""
-    global _current_config, _config_path
     data = _load_yaml(path)
     config = ProxyConfig(**data)
-    async with _config_lock:
-        _current_config = config
-        _config_path = path
     logger.info("Configuration loaded: %s", path)
     return config
 
 
-async def get_config() -> ProxyConfig:
-    """Get the current configuration (thread-safe)."""
-    async with _config_lock:
-        if _current_config is None:
-            raise RuntimeError(
-                "Configuration not loaded. Call load_config() first."
-            )
-        return _current_config
+class ConfigState:
+    """Holds the current config and supports hot-reload."""
 
+    def __init__(self, config: ProxyConfig, path: pathlib.Path):
+        self._config = config
+        self._path = path
+        self._lock = asyncio.Lock()
 
-async def reload_config() -> Optional[ProxyConfig]:
-    """Reload configuration from disk if the path is set."""
-    global _current_config
-    async with _config_lock:
-        if _config_path is None:
-            logger.warning("No config path set, cannot reload")
-            return None
-        data = _load_yaml(_config_path)
-        new_config = ProxyConfig(**data)
-        _current_config = new_config
-    logger.info("Configuration reloaded: %s", _config_path)
-    return new_config
+    @property
+    def path(self) -> pathlib.Path:
+        return self._path
+
+    async def get(self) -> ProxyConfig:
+        """Get a copy of the current configuration (thread-safe)."""
+        async with self._lock:
+            return copy.copy(self._config)
+
+    async def reload(self) -> Optional[ProxyConfig]:
+        """Reload configuration from disk."""
+        async with self._lock:
+            try:
+                data = _load_yaml(self._path)
+            except FileNotFoundError:
+                logger.warning(
+                    "Config file not found during reload, keeping current config"
+                )
+                return None
+            new_config = ProxyConfig(**data)
+            self._config = new_config
+        logger.info("Configuration reloaded: %s", self._path)
+        return new_config
 
 
 class ConfigWatcher:
@@ -71,10 +70,11 @@ class ConfigWatcher:
 
     def __init__(
         self,
-        path: pathlib.Path,
+        config_state: ConfigState,
         interval: float = 5.0,
     ):
-        self.path = path
+        self._config_state = config_state
+        self.path = config_state.path
         self.interval = interval
         self._last_mtime: float = 0.0
         self._running = False
@@ -109,7 +109,7 @@ class ConfigWatcher:
                 if current_mtime != self._last_mtime:
                     self._last_mtime = current_mtime
                     logger.info("Config file changed, reloading")
-                    await reload_config()
+                    await self._config_state.reload()
             except FileNotFoundError:
                 logger.warning(
                     "Config file not found during watch, skipping reload"

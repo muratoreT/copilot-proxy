@@ -3,10 +3,7 @@
 import logging
 
 import httpx
-from fastapi import APIRouter, HTTPException
-
-from . import proxy as proxy_module
-from .models import ProxyConfig
+from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +17,17 @@ async def health_check() -> dict:
 
 
 @router.get("/ready")
-async def readiness_check() -> dict:
+async def readiness_check(request: Request) -> dict:
     """
     Readiness check that verifies the upstream local AI server is reachable.
 
     Probes /v1/models on the upstream server to confirm it is alive.
     """
-    config = proxy_module._config
-    if config is None:
+    config_state = getattr(request.app.state, "config_state", None)
+    if config_state is None:
         raise HTTPException(status_code=503, detail="Config not loaded")
+
+    config = await config_state.get()
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

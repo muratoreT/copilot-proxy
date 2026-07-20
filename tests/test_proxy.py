@@ -1,12 +1,16 @@
 """Tests for proxy/proxy.py - main FastAPI app, health, metrics, and forwarding."""
 
+import pathlib
+
 import httpx
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from proxy.proxy import create_app
+from proxy.config import ConfigState
+from proxy.metrics import MetricsTracker
 from proxy.models import ProxyConfig, LocalAIServerConfig, ListenConfig, DefaultsConfig, RewriteConfig, LoggingConfig
 
 
@@ -28,9 +32,18 @@ def app(test_config):
     return create_app()
 
 
+def _setup_app_state(app, test_config):
+    """Helper to populate app.state with test fixtures (bypasses lifespan)."""
+    app.state.config_state = ConfigState(test_config, pathlib.Path("config.yaml"))
+    app.state.metrics = MetricsTracker()
+    app.state.http_client = None
+    app.state.debug_logger = None
+
+
 @pytest_asyncio.fixture
 async def client(test_config, app):
     """Create an async test client for the FastAPI app."""
+    _setup_app_state(app, test_config)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
@@ -64,20 +77,18 @@ class TestReadinessEndpoint:
         mock_client_cm.__aexit__.return_value = None
 
         with patch("proxy.health.httpx.AsyncClient", return_value=mock_client_cm):
-            with patch("proxy.proxy._config", test_config):
-                response = await client.get("/ready")
-                assert response.status_code == 200
-                data = response.json()
-                assert data["status"] == "ready"
+            response = await client.get("/ready")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "ready"
 
     @pytest.mark.asyncio
     async def test_ready_returns_not_ready_when_local_ai_server_down(self, client, test_config):
         """Ready endpoint returns not_ready when the local AI server is unreachable."""
         with patch("proxy.health.httpx.AsyncClient") as mock_client_class:
             mock_client_class.side_effect = httpx.ConnectError("Connection refused")
-            with patch("proxy.proxy._config", test_config):
-                response = await client.get("/ready")
-                assert response.status_code == 503
+            response = await client.get("/ready")
+            assert response.status_code == 503
 
 
 class TestMetricsEndpoint:
@@ -96,7 +107,7 @@ class TestUnknownEndpointForwarding:
     """Unknown endpoints are forwarded to upstream."""
 
     @pytest.mark.asyncio
-    async def test_unknown_endpoint_forwarded(self, client, test_config):
+    async def test_unknown_endpoint_forwarded(self, client, app, test_config):
         """Unknown path is forwarded to the local AI server upstream."""
         mock_response = AsyncMock()
         mock_response.status_code = 200
@@ -109,18 +120,17 @@ class TestUnknownEndpointForwarding:
 
         mock_http_client = MagicMock()
         mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
+        app.state.http_client = mock_http_client
 
-        with patch("proxy.proxy._config", test_config):
-            with patch("proxy.proxy._http_client", mock_http_client):
-                response = await client.get("/v1/models")
-                assert response.status_code == 200
+        response = await client.get("/v1/models")
+        assert response.status_code == 200
 
 
 class TestErrorForwarding:
     """Error responses from upstream are forwarded unchanged."""
 
     @pytest.mark.asyncio
-    async def test_error_status_forwarded(self, client, test_config):
+    async def test_error_status_forwarded(self, client, app, test_config):
         """Upstream error status is preserved."""
         mock_response = AsyncMock()
         mock_response.status_code = 500
@@ -133,11 +143,10 @@ class TestErrorForwarding:
 
         mock_http_client = MagicMock()
         mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
+        app.state.http_client = mock_http_client
 
-        with patch("proxy.proxy._config", test_config):
-            with patch("proxy.proxy._http_client", mock_http_client):
-                response = await client.post(
-                    "/v1/chat/completions",
-                    json={"model": "test", "messages": []},
-                )
-                assert response.status_code == 500
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"model": "test", "messages": []},
+        )
+        assert response.status_code == 500
