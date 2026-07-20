@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import tempfile
+import time
 
 import pytest
 
@@ -303,3 +304,179 @@ class TestDebugLogger:
             data = json.load(f)
 
         assert data["response"]["status_code"] == 500
+
+
+class TestCleanup:
+    """Test DebugLogger cleanup of old conversation folders."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_old_folders(self, tmp_path):
+        """Folders older than retention_days are deleted."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=7)
+        debug_logger = DebugLogger(config)
+
+        # Create a conversation folder with an old exchange file
+        conv_dir = tmp_path / "abc1234567890abc"
+        conv_dir.mkdir()
+        exchange_file = conv_dir / "exchange_001.json"
+        exchange_file.write_text(json.dumps({"exchange": 1}))
+
+        # Backdate the file by 10 days
+        old_time = time.time() - (10 * 86400)
+        os.utime(exchange_file, (old_time, old_time))
+
+        # Run cleanup
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 1
+        assert freed > 0
+        assert not conv_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_keeps_recent_folders(self, tmp_path):
+        """Folders within retention window are NOT deleted."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=7)
+        debug_logger = DebugLogger(config)
+
+        # Create a conversation folder with a recent exchange file
+        conv_dir = tmp_path / "def1234567890def"
+        conv_dir.mkdir()
+        exchange_file = conv_dir / "exchange_001.json"
+        exchange_file.write_text(json.dumps({"exchange": 1}))
+
+        # File is recent (just created)
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 0
+        assert freed == 0
+        assert conv_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_empty_folders(self, tmp_path):
+        """Empty conversation folders are treated as old and deleted."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=7)
+        debug_logger = DebugLogger(config)
+
+        # Create an empty conversation folder
+        conv_dir = tmp_path / "empty1234567890a"
+        conv_dir.mkdir()
+
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 1
+        assert not conv_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_uses_newest_file_mtime(self, tmp_path):
+        """Only the newest file's mtime determines folder age."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=7)
+        debug_logger = DebugLogger(config)
+
+        conv_dir = tmp_path / "mixed1234567890ab"
+        conv_dir.mkdir()
+
+        # Old file
+        old_file = conv_dir / "exchange_001.json"
+        old_file.write_text(json.dumps({"exchange": 1}))
+        old_time = time.time() - (10 * 86400)
+        os.utime(old_file, (old_time, old_time))
+
+        # Recent file
+        recent_file = conv_dir / "exchange_002.json"
+        recent_file.write_text(json.dumps({"exchange": 2}))
+
+        # Folder should survive because newest file is recent
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 0
+        assert conv_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_multiple_folders(self, tmp_path):
+        """Cleanup correctly handles multiple folders with mixed ages."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=7)
+        debug_logger = DebugLogger(config)
+
+        # Old folder
+        old_dir = tmp_path / "old0000000000000a"
+        old_dir.mkdir()
+        (old_dir / "exchange_001.json").write_text(json.dumps({"exchange": 1}))
+        old_time = time.time() - (10 * 86400)
+        os.utime(old_dir / "exchange_001.json", (old_time, old_time))
+
+        # Recent folder
+        recent_dir = tmp_path / "recent00000000000b"
+        recent_dir.mkdir()
+        (recent_dir / "exchange_001.json").write_text(json.dumps({"exchange": 1}))
+
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 1
+        assert not old_dir.exists()
+        assert recent_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_skips_non_directories(self, tmp_path):
+        """Non-directory entries in log_dir are ignored."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=7)
+        debug_logger = DebugLogger(config)
+
+        # Create a file directly in log_dir (not a folder)
+        stray_file = tmp_path / "readme.txt"
+        stray_file.write_text("do not delete")
+
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 0
+        assert stray_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_loop_starts_and_stops(self, tmp_path):
+        """Cleanup loop starts and stops gracefully."""
+        config = DebugConfig(
+            enabled=True,
+            log_dir=str(tmp_path),
+            retention_days=7,
+            cleanup_interval_hours=24,
+        )
+        debug_logger = DebugLogger(config)
+
+        await debug_logger.start_cleanup_loop()
+        assert hasattr(debug_logger, "_cleanup_task")
+        assert debug_logger._cleanup_task is not None
+
+        await debug_logger.stop_cleanup_loop()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_disabled_does_not_start(self, tmp_path):
+        """When debug is disabled, cleanup loop does not start."""
+        config = DebugConfig(
+            enabled=False,
+            log_dir=str(tmp_path),
+            retention_days=7,
+            cleanup_interval_hours=24,
+        )
+        debug_logger = DebugLogger(config)
+
+        await debug_logger.start_cleanup_loop()
+        assert not hasattr(debug_logger, "_cleanup_task")
+
+    @pytest.mark.asyncio
+    async def test_cleanup_zero_retention_deletes_all(self, tmp_path):
+        """retention_days=0 deletes all existing folders immediately."""
+        config = DebugConfig(enabled=True, log_dir=str(tmp_path), retention_days=0)
+        debug_logger = DebugLogger(config)
+
+        conv_dir = tmp_path / "abc1234567890abc"
+        conv_dir.mkdir()
+        exchange_file = conv_dir / "exchange_001.json"
+        exchange_file.write_text(json.dumps({"exchange": 1}))
+
+        # Backdate by 1 second so it's strictly before cutoff (now)
+        old_time = time.time() - 1
+        os.utime(exchange_file, (old_time, old_time))
+
+        deleted, freed = await debug_logger.cleanup_old_logs()
+
+        assert deleted == 1
+        assert not conv_dir.exists()
