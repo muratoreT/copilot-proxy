@@ -1,6 +1,10 @@
 # copilot-proxy
 
-A production-ready Python reverse proxy for GitHub Copilot that sits between VS Code and a local AI server. Provides transparent request forwarding with configurable request rewriting, hot-reload configuration, and comprehensive logging & metrics.
+**Main purpose:** Improve compatibility between VS Code GitHub Copilot and a local AI model.
+
+VS Code's GitHub Copilot extension is built to talk to OpenAI's cloud API, but many developers want to use a local AI model instead — for privacy, cost, or offline access. The problem is that local models often don't speak the same "dialect" as OpenAI: they may not support the same parameters, handle tool calls differently, or choke on request shapes that Copilot sends.
+
+This proxy sits in the middle to bridge that gap. It intercepts the requests from Copilot, rewrites them so the local model can understand them, and translates the responses back. Think of it as an adapter that lets you swap out OpenAI for any local AI server without Copilot noticing.
 
 ```
 GitHub Copilot

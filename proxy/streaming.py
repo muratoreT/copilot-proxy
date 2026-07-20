@@ -289,14 +289,34 @@ def _parse_sse_to_reconstructed(body_bytes: bytes) -> dict:
                         continue
                     if idx not in tool_calls_map:
                         tool_calls_map[idx] = {}
-                    # Merge fields from delta chunks
-                    for key in ("id", "type", "name", "arguments"):
-                        if key in tc and tc[key] is not None:
-                            existing = tool_calls_map[idx].get(key)
-                            if existing and isinstance(existing, str):
-                                tool_calls_map[idx][key] = existing + tc[key]
-                            else:
-                                tool_calls_map[idx][key] = tc[key]
+                    # id comes incrementally across chunks and should be concatenated
+                    tc_id = tc.get("id")
+                    if tc_id is not None and isinstance(tc_id, str):
+                        existing_id = tool_calls_map[idx].get("id", "")
+                        tool_calls_map[idx]["id"] = existing_id + tc_id
+                    # type is set once and should not be concatenated
+                    tc_type = tc.get("type")
+                    if tc_type is not None:
+                        tool_calls_map[idx]["type"] = tc_type
+                    # name and arguments may be nested under "function" (OpenAI format)
+                    # or at the top level; handle both
+                    func = tc.get("function")
+                    if isinstance(func, dict):
+                        for key in ("name", "arguments"):
+                            if key in func and func[key] is not None:
+                                existing = tool_calls_map[idx].get(key)
+                                if existing and isinstance(existing, str):
+                                    tool_calls_map[idx][key] = existing + func[key]
+                                else:
+                                    tool_calls_map[idx][key] = func[key]
+                    else:
+                        for key in ("name", "arguments"):
+                            if key in tc and tc[key] is not None:
+                                existing = tool_calls_map[idx].get(key)
+                                if existing and isinstance(existing, str):
+                                    tool_calls_map[idx][key] = existing + tc[key]
+                                else:
+                                    tool_calls_map[idx][key] = tc[key]
 
     tool_calls = [
         tool_calls_map[i] for i in sorted(tool_calls_map)
