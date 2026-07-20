@@ -44,16 +44,22 @@
 <section class="request-section">
     <h3>Request</h3>
     <dl class="meta-list">
-        <dt>Method</dt><dd><span class="method-badge">{{ exchange.request.method }}</span></dd>
-        <dt>Path</dt><dd>{{ exchange.request.path }}</dd>
-        <dt>Timestamp</dt><dd class="timestamp">{{ exchange.request.timestamp }}</dd>
+        <dt>Method</dt>
+        <dd><span class="method-badge">{{ exchange.request.method }}</span></dd>
+        <dt>Path</dt>
+        <dd>{{ exchange.request.path }}</dd>
+        <dt>Timestamp</dt>
+        <dd class="timestamp">{{ exchange.request.timestamp }}</dd>
     </dl>
 
     <details class="collapsible">
         <summary>Headers ({{ exchange.request.headers|length }})</summary>
         <table class="headers-table">
             {% for k, v in exchange.request.headers.items() %}
-            <tr><td class="header-key">{{ k }}</td><td>{{ v }}</td></tr>
+            <tr>
+                <td class="header-key">{{ k }}</td>
+                <td>{{ v }}</td>
+            </tr>
             {% endfor %}
         </table>
     </details>
@@ -64,26 +70,32 @@
 <section class="response-section">
     <h3>Response</h3>
     <dl class="meta-list">
-        <dt>Status</dt><dd>
+        <dt>Status</dt>
+        <dd>
             <span class="status-badge status-{{ exchange.response.status_code // 100 }}">
                 {{ exchange.response.status_code }}
             </span>
         </dd>
-        <dt>Duration</dt><dd>
+        <dt>Duration</dt>
+        <dd>
             {% if exchange.response.duration_ms %}
-                {{ "%.1f"|format(exchange.response.duration_ms) }} ms
+            {{ "%.1f"|format(exchange.response.duration_ms) }} ms
             {% else %}
-                —
+            —
             {% endif %}
         </dd>
-        <dt>Timestamp</dt><dd class="timestamp">{{ exchange.response.timestamp }}</dd>
+        <dt>Timestamp</dt>
+        <dd class="timestamp">{{ exchange.response.timestamp }}</dd>
     </dl>
 
     <details class="collapsible">
         <summary>Headers ({{ exchange.response.headers|length }})</summary>
         <table class="headers-table">
             {% for k, v in exchange.response.headers.items() %}
-            <tr><td class="header-key">{{ k }}</td><td>{{ v }}</td></tr>
+            <tr>
+                <td class="header-key">{{ k }}</td>
+                <td>{{ v }}</td>
+            </tr>
             {% endfor %}
         </table>
     </details>
@@ -95,24 +107,91 @@
 {% block scripts %}
 <script src="/static/json-tree.js"></script>
 <script>
-// Render request body
-{% if exchange.request.body %}
-renderBodySections(document.getElementById('request-body-section'), {{ exchange.request.body | tojson }});
-{% else %}
-document.getElementById('request-body-section').textContent = '(no body)';
-{% endif %}
+    // HTML escape helper
+    function escapeHtml(s) {
+        var div = document.createElement('div');
+        div.appendChild(document.createTextNode(s));
+        return div.innerHTML;
+    }
 
-// Render response body
-{% if exchange.response.body %}
-const respBody = {{ exchange.response.body | tojson }};
-if (typeof respBody === 'string') {
-    try { renderBodySections(document.getElementById('response-body-section'), JSON.parse(respBody)); }
-    catch(e) { renderBodySections(document.getElementById('response-body-section'), respBody); }
-} else {
-    renderBodySections(document.getElementById('response-body-section'), respBody);
-}
-{% else %}
-document.getElementById('response-body-section').textContent = '(no body — streaming)';
-{% endif %}
+    // Render request body
+    {% if exchange.request.body %}
+    renderBodySections(document.getElementById('request-body-section'), {{ exchange.request.body | tojson }});
+    {% else %}
+    document.getElementById('request-body-section').textContent = '(no body)';
+    {% endif %}
+
+    // Render response body
+    {% if exchange.response.body %}
+    const respBody = {{ exchange.response.body | tojson }};
+    const respSection = document.getElementById('response-body-section');
+
+    // Detect structured reconstructed response (new format)
+    if (typeof respBody === 'object' && respBody !== null && 'content' in respBody && 'reasoning' in respBody) {
+        const container = document.createElement('div');
+        container.className = 'reconstructed-response';
+
+        // Metadata badges (finish_reason, usage)
+        const metaParts = [];
+        if (respBody.finish_reason) {
+            metaParts.push('<span class="meta-badge">finish: ' + escapeHtml(respBody.finish_reason) + '</span>');
+        }
+        if (respBody.usage) {
+            const u = respBody.usage;
+            const parts = [];
+            if (u.completion_tokens) parts.push('completion: ' + u.completion_tokens);
+            if (u.prompt_tokens) parts.push('prompt: ' + u.prompt_tokens);
+            if (u.total_tokens) parts.push('total: ' + u.total_tokens);
+            if (parts.length) {
+                metaParts.push('<span class="meta-badge">tokens: ' + parts.join(', ') + '</span>');
+            }
+        }
+        if (respBody._truncated) {
+            metaParts.push('<span class="meta-badge warning">⚠ ' + escapeHtml(respBody._truncated_msg || 'Truncated') + '</span>');
+        }
+        if (metaParts.length) {
+            const metaDiv = document.createElement('div');
+            metaDiv.className = 'response-meta';
+            metaDiv.innerHTML = metaParts.join(' ');
+            container.appendChild(metaDiv);
+        }
+
+        // Content as plain text
+        if (respBody.content) {
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'response-content-block';
+            contentDiv.innerHTML = '<h4>Content</h4><pre class="response-text">' + escapeHtml(respBody.content) + '</pre>';
+            container.appendChild(contentDiv);
+        }
+
+        // Reasoning as collapsible
+        if (respBody.reasoning) {
+            const details = document.createElement('details');
+            details.className = 'collapsible';
+            details.innerHTML = '<summary>Reasoning (' + respBody.reasoning.length + ' chars)</summary><pre class="response-text">' + escapeHtml(respBody.reasoning) + '</pre>';
+            container.appendChild(details);
+        }
+
+        // Tool calls as JSON
+        if (respBody.tool_calls && respBody.tool_calls.length > 0) {
+            const tcDiv = document.createElement('div');
+            tcDiv.className = 'response-content-block';
+            tcDiv.innerHTML = '<h4>Tool Calls (' + respBody.tool_calls.length + ')</h4>';
+            const pre = document.createElement('pre');
+            pre.className = 'json-block';
+            pre.textContent = JSON.stringify(respBody.tool_calls, null, 2);
+            tcDiv.appendChild(pre);
+            container.appendChild(tcDiv);
+        }
+
+        respSection.appendChild(container);
+    } else {
+        // Fallback: render as JSON tree
+        try { renderBodySections(respSection, typeof respBody === 'string' ? JSON.parse(respBody) : respBody); }
+        catch (e) { renderBodySections(respSection, respBody); }
+    }
+    {% else %}
+    document.getElementById('response-body-section').textContent = '(no body — streaming)';
+    {% endif %}
 </script>
 {% endblock %}

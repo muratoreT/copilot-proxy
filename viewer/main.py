@@ -98,37 +98,41 @@ def _scan_conversations(log_dir: Path) -> List[ConversationInfo]:
         if not entry.is_dir():
             continue
 
-        exchanges: List[ExchangeSummary] = []
-        exchange_files = sorted(entry.glob("exchange_*.json"))
+        try:
+            exchanges: List[ExchangeSummary] = []
+            exchange_files = sorted(entry.glob("exchange_*.json"))
 
-        for ef in exchange_files:
-            data = _parse_exchange_file(ef)
-            req = data.get("request", {})
-            resp = data.get("response", {})
+            for ef in exchange_files:
+                data = _parse_exchange_file(ef)
+                req = data.get("request", {})
+                resp = data.get("response", {})
 
-            exchanges.append(
-                ExchangeSummary(
-                    num=data.get("exchange", 0),
-                    request_method=req.get("method", ""),
-                    request_timestamp=req.get("timestamp", ""),
-                    user_prompt=_extract_first_user_message(data),
-                    response_status_code=resp.get("status_code"),
-                    response_duration_ms=resp.get("duration_ms"),
-                    retry_count=data.get("retry_count", 0),
+                exchanges.append(
+                    ExchangeSummary(
+                        num=data.get("exchange", 0),
+                        request_method=req.get("method", ""),
+                        request_timestamp=req.get("timestamp", ""),
+                        user_prompt=_extract_first_user_message(data),
+                        response_status_code=resp.get("status_code"),
+                        response_duration_ms=resp.get("duration_ms"),
+                        retry_count=data.get("retry_count", 0),
+                    )
+                )
+
+            timestamps = [e.request_timestamp for e in exchanges if e.request_timestamp]
+
+            conversations.append(
+                ConversationInfo(
+                    key=entry.name,
+                    exchange_count=len(exchanges),
+                    first_timestamp=timestamps[0] if timestamps else "",
+                    last_timestamp=timestamps[-1] if timestamps else "",
+                    exchanges=exchanges,
                 )
             )
-
-        timestamps = [e.request_timestamp for e in exchanges if e.request_timestamp]
-
-        conversations.append(
-            ConversationInfo(
-                key=entry.name,
-                exchange_count=len(exchanges),
-                first_timestamp=timestamps[0] if timestamps else "",
-                last_timestamp=timestamps[-1] if timestamps else "",
-                exchanges=exchanges,
-            )
-        )
+        except FileNotFoundError:
+            # Conversation folder was deleted during scan (cleanup race)
+            continue
 
     return conversations
 

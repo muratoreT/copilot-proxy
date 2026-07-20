@@ -105,6 +105,16 @@ class DebugConfig(BaseModel):
         ge=1,
         description="Max MB to buffer for streaming responses before truncating.",
     )
+    retention_days: int = Field(
+        default=7,
+        ge=0,
+        description="Days to keep debug logs before automatic cleanup.",
+    )
+    cleanup_interval_hours: int = Field(
+        default=24,
+        ge=1,
+        description="Hours between automatic cleanup runs.",
+    )
 
 
 class StreamingRetryConfig(BaseModel):

@@ -31,7 +31,14 @@ streaming_retry:
   retry_on_thinking_only: false
 
 models:
-  "/mnt/models/localAIServer/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8":
     max_tokens: 8192
-  "/mnt/models/localAIServer/Qwen/Qwen3-0.6B":
+  "Qwen/Qwen3-0.6B":
     max_tokens: 2048
+
+debug:
+  enabled: false
+  log_dir: logs/debug
+  max_response_size_mb: 20
+  retention_days: 7
+  cleanup_interval_hours: 24

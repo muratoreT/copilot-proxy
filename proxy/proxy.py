@@ -45,6 +45,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize debug logger
     _debug_logger = DebugLogger(_config.debug)
 
+    # Start cleanup loop (if debug logging is enabled)
+    await _debug_logger.start_cleanup_loop()
+
     # Create shared HTTP client
     _http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(
@@ -74,6 +77,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("Proxy shutting down")
+
+    if _debug_logger:
+        await _debug_logger.stop_cleanup_loop()
 
     if _config_watcher:
         await _config_watcher.stop()

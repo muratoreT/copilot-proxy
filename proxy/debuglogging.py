@@ -45,7 +45,7 @@ class ExchangeData:
     response_timestamp: Optional[str] = None
     response_status_code: Optional[int] = None
     response_headers: Optional[Dict[str, str]] = None
-    response_body: Optional[str] = None
+    response_body: Optional[Any] = None
     response_duration_ms: Optional[float] = None
 
     # Retry info
@@ -176,12 +176,14 @@ class DebugLogger:
         exchange_num: int,
         status_code: int,
         headers: Dict[str, str],
-        body: str,
+        body: Any,
         duration_ms: float,
         retry_count: int = 0,
     ) -> None:
         """
         Complete an exchange with response data and write to disk.
+
+        body can be a str (legacy) or a dict (structured reconstructed response).
         """
         if not self.enabled or not conv_key:
             return
@@ -216,8 +218,9 @@ class DebugLogger:
             target.response_duration_ms = round(duration_ms, 2)
             target.retry_count = retry_count
 
-            # Truncation
-            body_bytes = body.encode("utf-8", errors="replace")
+            # Truncation — serialize to check size
+            body_json = json.dumps(body, ensure_ascii=False)
+            body_bytes = body_json.encode("utf-8", errors="replace")
             if len(body_bytes) > self.max_response_bytes:
                 logger.warning(
                     "Debug: response truncated for conv=%s exchange=%d "
@@ -226,11 +229,24 @@ class DebugLogger:
                     exchange_num,
                     self.config.max_response_size_mb,
                 )
-                target.response_body = (
-                    body_bytes[:self.max_response_bytes].decode("utf-8", errors="replace")
-                    + f"\n\n[TRUNCATED: response exceeded {self.config.max_response_size_mb} MB limit, "
-                    f"original size: {len(body_bytes)} bytes]"
-                )
+                # Truncate string content fields to reduce size
+                if isinstance(body, dict):
+                    content = body.get("content", "")
+                    if isinstance(content, str):
+                        max_content = self.max_response_bytes // 2
+                        body["content"] = (
+                            content[:max_content]
+                            + f"\n\n[TRUNCATED: response exceeded "
+                            f"{self.config.max_response_size_mb} MB limit]"
+                        )
+                    reasoning = body.get("reasoning", "")
+                    if isinstance(reasoning, str):
+                        max_reasoning = self.max_response_bytes // 4
+                        body["reasoning"] = (
+                            reasoning[:max_reasoning]
+                            + f"\n\n[TRUNCATED]"
+                        )
+                target.response_body = body
             else:
                 target.response_body = body
 
@@ -313,3 +329,115 @@ class DebugLogger:
                 ex._response_start_time = now
                 break
         return now
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+
+    def _cleanup_sync(self, cutoff_ts: float) -> tuple:
+        """Synchronous helper: scan log_dir and delete old conversation folders.
+
+        Returns (conversations_deleted, total_freed_bytes).
+        """
+        import shutil
+
+        deleted = 0
+        freed = 0
+
+        if not self.log_dir.exists():
+            return (0, 0)
+
+        for entry in self.log_dir.iterdir():
+            if not entry.is_dir():
+                continue
+
+            # Find the newest file's mtime inside the conversation folder
+            newest = 0.0
+            for child in entry.iterdir():
+                try:
+                    mt = child.stat().st_mtime
+                except OSError:
+                    continue
+                if mt > newest:
+                    newest = mt
+
+            if newest == 0.0:
+                # Empty folder — treat as old
+                newest = 0.0
+
+            if newest < cutoff_ts:
+                try:
+                    size = sum(
+                        f.stat().st_size
+                        for f in entry.rglob("*")
+                        if f.is_file()
+                    )
+                    freed += size
+                    shutil.rmtree(entry)
+                    deleted += 1
+                except OSError as e:
+                    logger.warning(
+                        "Debug cleanup: failed to remove %s: %s", entry, e
+                    )
+
+        return (deleted, freed)
+
+    async def cleanup_old_logs(self) -> tuple:
+        """Delete conversation folders whose newest file is older than retention_days.
+
+        Returns (conversations_deleted, total_freed_bytes).
+        """
+        from datetime import timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.config.retention_days)
+        cutoff_ts = cutoff.timestamp()
+
+        loop = asyncio.get_running_loop()
+        deleted, freed = await loop.run_in_executor(None, self._cleanup_sync, cutoff_ts)
+
+        if deleted:
+            logger.info(
+                "cleanup.complete conversations_deleted=%d total_freed_mb=%.2f",
+                deleted,
+                freed / (1024 * 1024),
+            )
+        return (deleted, freed)
+
+    async def start_cleanup_loop(self) -> None:
+        """Start the periodic cleanup background task."""
+        if not self.enabled:
+            return
+
+        self._cleanup_shutdown = asyncio.Event()
+        interval_seconds = self.config.cleanup_interval_hours * 3600
+
+        async def _loop():
+            while not self._cleanup_shutdown.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._cleanup_shutdown.wait(),
+                        timeout=interval_seconds,
+                    )
+                    break  # Shutdown signal received
+                except asyncio.TimeoutError:
+                    # Interval elapsed — run cleanup
+                    try:
+                        await self.cleanup_old_logs()
+                    except Exception:
+                        logger.exception("Debug cleanup: unexpected error during cleanup")
+
+        self._cleanup_task = asyncio.create_task(_loop())
+        logger.info(
+            "Debug cleanup loop started: retention=%d days, interval=%d hours",
+            self.config.retention_days,
+            self.config.cleanup_interval_hours,
+        )
+
+    async def stop_cleanup_loop(self) -> None:
+        """Signal the cleanup loop to stop and wait for it to finish."""
+        if hasattr(self, "_cleanup_shutdown"):
+            self._cleanup_shutdown.set()
+
+        if hasattr(self, "_cleanup_task") and self._cleanup_task is not None:
+            await self._cleanup_task
+            logger.info("Debug cleanup loop stopped")
