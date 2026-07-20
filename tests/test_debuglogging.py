@@ -237,15 +237,21 @@ class TestDebugLogger:
             headers={},
         )
 
-        # 2 MB response body
-        large_body = "x" * (2 * 1024 * 1024)
+        # Structured response body with large content field (~2 MB text)
+        large_content = "x" * (2 * 1024 * 1024)
+        structured_body = {
+            "content": large_content,
+            "reasoning": "",
+            "tool_calls": [],
+            "finish_reason": "stop",
+        }
 
         await logger.complete_exchange(
             conv_key=conv_key,
             exchange_num=exchange_num,
             status_code=200,
             headers={},
-            body=large_body,
+            body=structured_body,
             duration_ms=100.0,
         )
 
@@ -253,8 +259,10 @@ class TestDebugLogger:
         with open(exchange_file) as f:
             data = json.load(f)
 
-        # Body should be truncated
-        assert len(data["response"]["body"]) < len(large_body)
+        # Body should be truncated (content field shortened)
+        response_body = data["response"]["body"]
+        assert isinstance(response_body, dict)
+        assert len(response_body["content"]) < len(large_content)
 
     @pytest.mark.asyncio
     async def test_conversation_folder_created(self, tmp_path):

@@ -196,6 +196,216 @@ def _build_thinking_retry_body(body: Optional[dict]) -> Optional[dict]:
     return retried
 
 
+def _parse_sse_to_reconstructed(body_bytes: bytes) -> dict:
+    """Parse raw SSE byte stream into a structured response dict.
+
+    Returns a dict with keys: content, reasoning, tool_calls,
+    finish_reason, usage, metadata.
+    """
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls_map: dict[int, dict] = {}  # index -> tool_call dict
+    finish_reason: Optional[str] = None
+    usage: Optional[dict] = None
+    metadata: Optional[dict] = None
+
+    text = body_bytes.decode("utf-8", errors="replace")
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        # Capture metadata from first event
+        if metadata is None:
+            metadata = {
+                k: v
+                for k, v in event.items()
+                if k in ("id", "model", "created")
+            }
+
+        # Capture usage (last one wins)
+        if "usage" in event and isinstance(event["usage"], dict):
+            usage = event["usage"]
+
+        choices = event.get("choices", [])
+        if not isinstance(choices, list):
+            continue
+
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+
+            # Capture finish_reason (last one wins)
+            fr = choice.get("finish_reason")
+            if fr is not None:
+                finish_reason = fr
+
+            delta = choice.get("delta", {})
+            if not isinstance(delta, dict):
+                continue
+
+            # Plain string content
+            cn = delta.get("content")
+            if isinstance(cn, str) and cn.strip():
+                content_parts.append(cn)
+
+            # Reasoning content
+            reasoning = delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                reasoning_parts.append(reasoning)
+
+            # content_parts array (Qwen ext:thinking format)
+            content_parts_arr = delta.get("content_parts", [])
+            if isinstance(content_parts_arr, list):
+                for part in content_parts_arr:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = part.get("type")
+                    part_content = part.get("content", "")
+                    if isinstance(part_content, str) and part_content.strip():
+                        if part_type == "thinking":
+                            reasoning_parts.append(part_content)
+                        elif part_type == "text":
+                            content_parts.append(part_content)
+
+            # Tool calls
+            tc_list = delta.get("tool_calls", [])
+            if isinstance(tc_list, list):
+                for tc in tc_list:
+                    if not isinstance(tc, dict):
+                        continue
+                    idx = tc.get("index")
+                    if idx is None:
+                        continue
+                    if idx not in tool_calls_map:
+                        tool_calls_map[idx] = {}
+                    # Merge fields from delta chunks
+                    for key in ("id", "type", "name", "arguments"):
+                        if key in tc and tc[key] is not None:
+                            existing = tool_calls_map[idx].get(key)
+                            if existing and isinstance(existing, str):
+                                tool_calls_map[idx][key] = existing + tc[key]
+                            else:
+                                tool_calls_map[idx][key] = tc[key]
+
+    tool_calls = [
+        tool_calls_map[i] for i in sorted(tool_calls_map)
+    ]
+
+    return {
+        "content": "".join(content_parts),
+        "reasoning": "".join(reasoning_parts),
+        "tool_calls": tool_calls,
+        "finish_reason": finish_reason,
+        "usage": usage,
+        "metadata": metadata,
+    }
+
+
+def _parse_non_streaming_to_reconstructed(body_str: str) -> dict:
+    """Parse a non-streaming JSON response into a structured response dict.
+
+    Same output shape as _parse_sse_to_reconstructed.
+    """
+    content = ""
+    reasoning = ""
+    tool_calls: list[dict] = []
+    finish_reason: Optional[str] = None
+    usage: Optional[dict] = None
+    metadata: Optional[dict] = None
+
+    try:
+        data = json.loads(body_str)
+    except json.JSONDecodeError:
+        return {
+            "content": "",
+            "reasoning": "",
+            "tool_calls": [],
+            "finish_reason": None,
+            "usage": None,
+            "metadata": None,
+        }
+
+    # Metadata
+    metadata = {
+        k: v
+        for k, v in data.items()
+        if k in ("id", "model", "created")
+    }
+
+    # Usage
+    if "usage" in data and isinstance(data["usage"], dict):
+        usage = data["usage"]
+
+    choices = data.get("choices", [])
+    if not isinstance(choices, list):
+        return {
+            "content": content,
+            "reasoning": reasoning,
+            "tool_calls": tool_calls,
+            "finish_reason": finish_reason,
+            "usage": usage,
+            "metadata": metadata,
+        }
+
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+
+        fr = choice.get("finish_reason")
+        if fr is not None:
+            finish_reason = fr
+
+        message = choice.get("message", {})
+        if not isinstance(message, dict):
+            continue
+
+        # Content — can be string or list of parts
+        cn = message.get("content")
+        if isinstance(cn, str):
+            content = cn
+        elif isinstance(cn, list):
+            for part in cn:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    txt = part.get("text", "")
+                    if isinstance(txt, str):
+                        content += txt
+
+        # Reasoning
+        rc = message.get("reasoning_content")
+        if isinstance(rc, str):
+            reasoning = rc
+
+        # Tool calls
+        tc = message.get("tool_calls")
+        if isinstance(tc, list):
+            tool_calls = [
+                {k: v for k, v in item.items()}
+                for item in tc
+                if isinstance(item, dict)
+            ]
+            break  # Only first choice has tool_calls typically
+
+    return {
+        "content": content,
+        "reasoning": reasoning,
+        "tool_calls": tool_calls,
+        "finish_reason": finish_reason,
+        "usage": usage,
+        "metadata": metadata,
+    }
+
+
 async def forward_request(
     client: httpx.AsyncClient,
     local_ai_server_url: str,
@@ -296,12 +506,15 @@ async def forward_request(
                 # Debug: capture non-streaming response
                 if debug_logger and debug_logger.enabled and debug_conv_key:
                     body_str = response_body.decode("utf-8", errors="replace")
+                    reconstructed = _parse_non_streaming_to_reconstructed(
+                        body_str
+                    )
                     await debug_logger.complete_exchange(
                         conv_key=debug_conv_key,
                         exchange_num=debug_exchange_num,
                         status_code=response.status_code,
                         headers=response_headers,
-                        body=body_str,
+                        body=reconstructed,
                         duration_ms=duration_ms,
                     )
 
@@ -487,11 +700,14 @@ def _handle_streaming_response(
                 and debug_logger.enabled
                 and debug_conv_key
             ):
-                body_str = accumulated_body.decode("utf-8", errors="replace")
+                reconstructed = _parse_sse_to_reconstructed(
+                    bytes(accumulated_body)
+                )
                 if truncated:
-                    body_str += (
-                        f"\n\n[TRUNCATED: response exceeded "
-                        f"{debug_logger.config.max_response_size_mb} MB limit]"
+                    reconstructed["_truncated"] = True
+                    reconstructed["_truncated_msg"] = (
+                        f"Response exceeded "
+                        f"{debug_logger.config.max_response_size_mb} MB limit"
                     )
 
                 # Strip hop-by-hop headers from response headers
@@ -506,7 +722,7 @@ def _handle_streaming_response(
                     exchange_num=debug_exchange_num,
                     status_code=response_status_code,
                     headers=clean_headers,
-                    body=body_str,
+                    body=reconstructed,
                     duration_ms=duration_ms,
                     retry_count=retry_count,
                 )

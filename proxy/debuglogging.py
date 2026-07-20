@@ -45,7 +45,7 @@ class ExchangeData:
     response_timestamp: Optional[str] = None
     response_status_code: Optional[int] = None
     response_headers: Optional[Dict[str, str]] = None
-    response_body: Optional[str] = None
+    response_body: Optional[Any] = None
     response_duration_ms: Optional[float] = None
 
     # Retry info
@@ -176,12 +176,14 @@ class DebugLogger:
         exchange_num: int,
         status_code: int,
         headers: Dict[str, str],
-        body: str,
+        body: Any,
         duration_ms: float,
         retry_count: int = 0,
     ) -> None:
         """
         Complete an exchange with response data and write to disk.
+
+        body can be a str (legacy) or a dict (structured reconstructed response).
         """
         if not self.enabled or not conv_key:
             return
@@ -216,8 +218,9 @@ class DebugLogger:
             target.response_duration_ms = round(duration_ms, 2)
             target.retry_count = retry_count
 
-            # Truncation
-            body_bytes = body.encode("utf-8", errors="replace")
+            # Truncation — serialize to check size
+            body_json = json.dumps(body, ensure_ascii=False)
+            body_bytes = body_json.encode("utf-8", errors="replace")
             if len(body_bytes) > self.max_response_bytes:
                 logger.warning(
                     "Debug: response truncated for conv=%s exchange=%d "
@@ -226,11 +229,24 @@ class DebugLogger:
                     exchange_num,
                     self.config.max_response_size_mb,
                 )
-                target.response_body = (
-                    body_bytes[:self.max_response_bytes].decode("utf-8", errors="replace")
-                    + f"\n\n[TRUNCATED: response exceeded {self.config.max_response_size_mb} MB limit, "
-                    f"original size: {len(body_bytes)} bytes]"
-                )
+                # Truncate string content fields to reduce size
+                if isinstance(body, dict):
+                    content = body.get("content", "")
+                    if isinstance(content, str):
+                        max_content = self.max_response_bytes // 2
+                        body["content"] = (
+                            content[:max_content]
+                            + f"\n\n[TRUNCATED: response exceeded "
+                            f"{self.config.max_response_size_mb} MB limit]"
+                        )
+                    reasoning = body.get("reasoning", "")
+                    if isinstance(reasoning, str):
+                        max_reasoning = self.max_response_bytes // 4
+                        body["reasoning"] = (
+                            reasoning[:max_reasoning]
+                            + f"\n\n[TRUNCATED]"
+                        )
+                target.response_body = body
             else:
                 target.response_body = body
 
