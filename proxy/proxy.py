@@ -14,7 +14,7 @@ from . import config as config_module
 from .config import ConfigWatcher
 from .debuglogging import DebugLogger
 from .health import router as health_router
-from .logging import log_request, log_response, setup_logging
+from .struct_logging import log_request, log_response, setup_logging
 from .metrics import metrics
 from .middleware import TimingMiddleware
 from .models import ProxyConfig
