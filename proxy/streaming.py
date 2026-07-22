@@ -474,9 +474,20 @@ async def forward_request(
         "upgrade",
         "host",
     }
-    filtered_headers = {
-        k: v for k, v in headers.items() if k.lower() not in hop_by_hop
-    }
+    filtered_headers = {}
+    for k, v in headers.items():
+        if k.lower() in hop_by_hop:
+            continue
+        # Drop Authorization headers with empty Bearer tokens
+        # (httpx rejects "Bearer " as an illegal header value)
+        if k.lower() == "authorization" and isinstance(v, str):
+            stripped = v.strip()
+            if stripped == "Bearer" or stripped == "Bearer ":
+                logger.warning(
+                    "Dropping empty Authorization header: %r", v
+                )
+                continue
+        filtered_headers[k] = v
 
     # Determine request content
     content = None
