@@ -66,6 +66,14 @@ class RewriteConfig(BaseModel):
             "Move image content from tool messages into compatible user messages."
         ),
     )
+    sanitize_special_tokens: bool = Field(
+        default=True,
+        description=(
+            "If True, neutralize literal special tokens (e.g. <|im_end|>, "
+            "<|endoftext|>) in message content so the upstream tokenizer does "
+            "not misinterpret them as control tokens."
+        ),
+    )
     remove_reasoning: bool = Field(
         default=False,
         description="If True, strip reasoning-related fields.",

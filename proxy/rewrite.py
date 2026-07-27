@@ -1,9 +1,84 @@
 """Request body rewriting logic."""
 
 import copy
+import re
 from typing import Any, Dict, Optional, Tuple
 
 from .models import ProxyConfig
+
+# Patterns for common special tokens that can leak into user content
+# and be misinterpreted by the tokenizer as control tokens.
+# We replace them with a visually identical but token-safe version.
+_SPECIAL_TOKEN_PATTERNS = [
+    # Qwen-style: <|endoftext|>, <|im_start|>, <|im_end|>, etc.
+    (re.compile(r"<\|endoftext\|>"), "<\u200b|endoftext\u200b|>"),
+    (re.compile(r"<\|im_start\|>"), "<\u200b|im_start\u200b|>"),
+    (re.compile(r"<\|im_end\|>"), "<\u200b|im_end\u200b|>"),
+    # Generic <|...|> patterns (catch-all for unknown control tokens)
+    (re.compile(r"<\|[^|]+\|>"), lambda m: m.group(0).replace("|", "\u200b|")),
+    # Qwen3 thinking tags: <think> and</think>
+    (re.compile(r"<\/?thinking>"), lambda m: m.group(0).replace("<", "<\u200b")),
+]
+
+
+def _sanitize_special_tokens(text: str) -> str:
+    """Replace literal special-token strings with safe equivalents.
+
+    Prevents user content (tool output, reviewed code, etc.) from containing
+    raw special tokens that vLLM's tokenizer could interpret as control tokens
+    (EOS, chat delimiters, etc.), which can cause premature stop or malformed
+    chat templates.
+    """
+    if not text:
+        return text
+    for pattern, repl in _SPECIAL_TOKEN_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def _sanitize_message_content(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively sanitize all string content in a message."""
+    if not isinstance(msg, dict):
+        return msg
+    result = dict(msg)
+    content = msg.get("content")
+    if isinstance(content, str):
+        result["content"] = _sanitize_special_tokens(content)
+    elif isinstance(content, list):
+        sanitized_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                sp = dict(part)
+                if "text" in sp and isinstance(sp["text"], str):
+                    sp["text"] = _sanitize_special_tokens(sp["text"])
+                sanitized_parts.append(sp)
+            else:
+                sanitized_parts.append(part)
+        result["content"] = sanitized_parts
+    # Sanitize tool call arguments (they may contain special tokens from code)
+    tool_calls = msg.get("tool_calls")
+    if isinstance(tool_calls, list):
+        sanitized_tc = []
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                stc = dict(tc)
+                func = tc.get("function")
+                if isinstance(func, dict):
+                    sfunc = dict(func)
+                    args = func.get("arguments", "")
+                    if isinstance(args, str):
+                        sfunc["arguments"] = _sanitize_special_tokens(args)
+                    stc["function"] = sfunc
+                sanitized_tc.append(stc)
+            else:
+                sanitized_tc.append(tc)
+        result["tool_calls"] = sanitized_tc
+    return result
+
+
+def _sanitize_messages(messages: list) -> list:
+    """Sanitize all messages in a conversation."""
+    return [_sanitize_message_content(msg) for msg in messages]
 
 
 def _extract_model(body: Dict[str, Any]) -> str:
@@ -142,6 +217,17 @@ def rewrite_request(
     was_modified = False
 
     model_name = _extract_model(body)
+
+    # --- special token sanitization (opt-out via config) ---
+    if (
+        config.rewrite.sanitize_special_tokens
+        and "messages" in modified
+        and isinstance(modified["messages"], list)
+    ):
+        sanitized = _sanitize_messages(modified["messages"])
+        if sanitized != modified["messages"]:
+            modified["messages"] = sanitized
+            was_modified = True
 
     # --- tool-result vision normalization ---
     if config.rewrite.normalize_tool_vision and "messages" in modified:

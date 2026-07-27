@@ -47,6 +47,7 @@ class TestStreamingPassthrough:
         mock_stream_context.__aenter__ = AsyncMock(return_value=mock_stream_context)
         mock_stream_context.__aexit__ = AsyncMock(return_value=None)
         mock_stream_context.headers = {"content-type": "text/event-stream"}
+        mock_stream_context.status_code = 200
 
         async def aiter_bytes():
             yield b'data: {"test": true}'
@@ -106,6 +107,7 @@ class TestChunkOrdering:
         mock_stream_context.__aenter__ = AsyncMock(return_value=mock_stream_context)
         mock_stream_context.__aexit__ = AsyncMock(return_value=None)
         mock_stream_context.headers = {"content-type": "text/event-stream"}
+        mock_stream_context.status_code = 200
 
         async def aiter_bytes():
             for i in range(5):
@@ -148,6 +150,7 @@ class TestContentTypePreservation:
         mock_stream_context.__aenter__ = AsyncMock(return_value=mock_stream_context)
         mock_stream_context.__aexit__ = AsyncMock(return_value=None)
         mock_stream_context.headers = {"content-type": "text/event-stream; charset=utf-8"}
+        mock_stream_context.status_code = 200
 
         async def aiter_bytes():
             yield b'data: {"test": true}'

@@ -17,6 +17,38 @@ from .models import ProxyConfig
 logger = logging.getLogger(__name__)
 
 
+def _extract_reasoning_from_delta(delta: dict) -> Optional[str]:
+    """Extract reasoning content from a streaming delta, checking all known fields.
+
+    vLLM / OpenAI-compatible backends may emit reasoning under different keys:
+    - ``reasoning_content`` (OpenAI standard)
+    - ``reasoning`` (vLLM / some backends)
+    - ``content_parts[type=thinking]`` (Qwen ext:thinking format)
+
+    Returns the first non-empty reasoning string found, or None.
+    """
+    # Check reasoning_content (OpenAI standard)
+    rc = delta.get("reasoning_content")
+    if isinstance(rc, str) and rc:
+        return rc
+
+    # Check reasoning (vLLM / some backends)
+    reasoning = delta.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        return reasoning
+
+    # Check content_parts[type=thinking] (Qwen ext:thinking)
+    content_parts = delta.get("content_parts", [])
+    if isinstance(content_parts, list):
+        for part in content_parts:
+            if isinstance(part, dict) and part.get("type") == "thinking":
+                pc = part.get("content", "")
+                if isinstance(pc, str) and pc:
+                    return pc
+
+    return None
+
+
 def _has_tool_messages(body: Optional[dict]) -> bool:
     """Return True when request history includes one or more tool messages."""
     if not body:
@@ -30,14 +62,60 @@ def _has_tool_messages(body: Optional[dict]) -> bool:
     )
 
 
+def _buffer_has_content(chunks: list[bytes]) -> bool:
+    """Quick check: does the buffered SSE data contain any content delta?
+
+    Used to decide when to stop buffering and start streaming through
+    (optimistic passthrough for retry path).
+    """
+    if not chunks:
+        return False
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        choices = event.get("choices", [])
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
+                if isinstance(delta, dict):
+                    content = delta.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return True
+                    if isinstance(content, list) and content:
+                        return True
+                    if delta.get("tool_calls"):
+                        return True
+    return False
+
+
 def _is_empty_stream_completion(chunks: list[bytes]) -> bool:
-    """Detect empty assistant completion from SSE stream chunks."""
+    """Detect empty assistant completion from SSE stream chunks.
+
+    Returns True when the stream has finish_reason=stop, no text content,
+    no tool calls, and completion_tokens <= 1.
+
+    Also checks reasoning fields (reasoning_content, reasoning, content_parts)
+    so reasoning-only streams are not misclassified as "empty" here —
+    they are handled by _is_thinking_only_completion instead.
+    """
     if not chunks:
         return False
 
     text = b"".join(chunks).decode("utf-8", errors="replace")
     has_content = False
     has_tool_calls = False
+    has_reasoning = False
     finish_reason = None
     completion_tokens = None
 
@@ -69,6 +147,11 @@ def _is_empty_stream_completion(chunks: list[bytes]) -> bool:
                         has_content = True
                     if delta.get("tool_calls"):
                         has_tool_calls = True
+                    # Check reasoning fields so reasoning-only streams are not
+                    # misclassified as "empty" here (they go to _is_thinking_only_completion)
+                    reasoning = _extract_reasoning_from_delta(delta)
+                    if reasoning is not None:
+                        has_reasoning = True
                 fr = choice.get("finish_reason")
                 if fr is not None:
                     finish_reason = fr
@@ -254,29 +337,15 @@ def _parse_sse_to_reconstructed(body_bytes: bytes) -> dict:
             if not isinstance(delta, dict):
                 continue
 
-            # Plain string content
+            # Plain string content — preserve whitespace-only deltas
             cn = delta.get("content")
-            if isinstance(cn, str) and cn.strip():
+            if isinstance(cn, str):
                 content_parts.append(cn)
 
-            # Reasoning content
-            reasoning = delta.get("reasoning")
-            if isinstance(reasoning, str) and reasoning.strip():
+            # Reasoning content — use centralized extractor
+            reasoning = _extract_reasoning_from_delta(delta)
+            if reasoning is not None:
                 reasoning_parts.append(reasoning)
-
-            # content_parts array (Qwen ext:thinking format)
-            content_parts_arr = delta.get("content_parts", [])
-            if isinstance(content_parts_arr, list):
-                for part in content_parts_arr:
-                    if not isinstance(part, dict):
-                        continue
-                    part_type = part.get("type")
-                    part_content = part.get("content", "")
-                    if isinstance(part_content, str) and part_content.strip():
-                        if part_type == "thinking":
-                            reasoning_parts.append(part_content)
-                        elif part_type == "text":
-                            content_parts.append(part_content)
 
             # Tool calls
             tc_list = delta.get("tool_calls", [])
@@ -401,10 +470,14 @@ def _parse_non_streaming_to_reconstructed(body_str: str) -> dict:
                     if isinstance(txt, str):
                         content += txt
 
-        # Reasoning
+        # Reasoning — check both reasoning_content (OpenAI) and reasoning (vLLM)
         rc = message.get("reasoning_content")
         if isinstance(rc, str):
             reasoning = rc
+        else:
+            rc = message.get("reasoning")
+            if isinstance(rc, str):
+                reasoning = rc
 
         # Tool calls
         tc = message.get("tool_calls")
@@ -633,6 +706,8 @@ def _handle_streaming_response(
         try:
             while True:
                 buffered_chunks: list[bytes] = []
+                # Track whether we've started streaming through (optimistic passthrough)
+                streaming_through = False
                 async with client.stream(
                     method,
                     url,
@@ -641,6 +716,27 @@ def _handle_streaming_response(
                 ) as response:
                     response_headers = dict(response.headers)
                     response_status_code = response.status_code
+
+                    # Finding E: check upstream status before committing to stream
+                    if response_status_code != 200:
+                        # Read the error body and yield it as a single SSE error event
+                        error_body = await response.aread()
+                        logger.warning(
+                            "Upstream returned %d for streaming request %s: %s",
+                            response_status_code,
+                            path or url,
+                            error_body[:500],
+                        )
+                        error_event = json.dumps(
+                            {
+                                "error": f"Upstream returned HTTP {response_status_code}",
+                                "detail": error_body.decode("utf-8", errors="replace")[:1000],
+                            }
+                        )
+                        yield f"data: {error_event}\n\n".encode()
+                        yield b"data: [DONE]\n\n"
+                        break
+
                     # Record response start for debug
                     if debug_logger and debug_logger.enabled and debug_conv_key:
                         debug_logger.set_response_start_time(
@@ -648,8 +744,18 @@ def _handle_streaming_response(
                         )
 
                     async for chunk in response.aiter_bytes():
-                        if retry_enabled:
+                        # Finding D: stream through optimistically once we see real content
+                        # This avoids buffering the entire stream (which kills TTFT)
+                        # while still catching empty completions for retry.
+                        if retry_enabled and not streaming_through:
                             buffered_chunks.append(chunk)
+                            # Check if buffer contains actual content delta
+                            if _buffer_has_content(buffered_chunks):
+                                # Real content detected — flush buffer and stream through
+                                for bc in buffered_chunks:
+                                    yield bc
+                                buffered_chunks.clear()
+                                streaming_through = True
                         else:
                             yield chunk
 
@@ -678,8 +784,8 @@ def _handle_streaming_response(
                                     debug_logger.config.max_response_size_mb,
                                 )
 
-                # Empty completion retry
-                if retry_enabled and _is_empty_stream_completion(buffered_chunks):
+                # Empty completion retry (only if we never started streaming through)
+                if retry_enabled and not streaming_through and _is_empty_stream_completion(buffered_chunks):
                     if retries_left > 0:
                         retries_left -= 1
                         retry_count += 1
@@ -697,7 +803,7 @@ def _handle_streaming_response(
                 thinking_retry_enabled = bool(
                     retry_cfg and retry_cfg.retry_on_thinking_only
                 )
-                if thinking_retry_enabled and _is_thinking_only_completion(buffered_chunks):
+                if thinking_retry_enabled and not streaming_through and _is_thinking_only_completion(buffered_chunks):
                     if retries_left > 0:
                         retries_left -= 1
                         retry_count += 1
@@ -711,7 +817,8 @@ def _handle_streaming_response(
                             await asyncio.sleep(retry_cfg.retry_delay_ms / 1000.0)
                         continue
 
-                if retry_enabled:
+                # Flush any remaining buffered chunks (for short/empty responses that didn't retry)
+                if buffered_chunks:
                     for chunk in buffered_chunks:
                         yield chunk
                 break
