@@ -26,8 +26,8 @@
                 <a href="/conversation/{{ conv.key }}" onclick="event.stopPropagation()">{{ conv.key }}</a>
             </td>
             <td>{{ conv.exchange_count }}</td>
-            <td class="timestamp">{{ conv.first_timestamp }}</td>
-            <td class="timestamp">{{ conv.last_timestamp }}</td>
+            <td class="timestamp" data-timestamp="{{ conv.first_timestamp }}"></td>
+            <td class="timestamp" data-timestamp="{{ conv.last_timestamp }}"></td>
         </tr>
         {% endfor %}
     </tbody>
@@ -35,4 +35,17 @@
 {% else %}
 <p class="empty-state">No conversations found in <code>{{ log_dir }}</code>.</p>
 {% endif %}
+<script>
+    document.querySelectorAll('.timestamp[data-timestamp]').forEach(el => {
+        const ts = el.getAttribute('data-timestamp');
+        if (ts) {
+            const date = new Date(ts);
+            if (!isNaN(date.getTime())) {
+                el.textContent = date.toLocaleTimeString() + ' ' + date.toLocaleDateString();
+            } else {
+                el.textContent = ts;
+            }
+        }
+    });
+</script>
 {% endblock %}

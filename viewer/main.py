@@ -157,8 +157,9 @@ def _render(template_name: str, context: Dict[str, Any]) -> HTMLResponse:
 
 @app.get("/")
 async def conversation_list(request: Request):
-    """List all conversations."""
+    """List all conversations, sorted by last request (most recent first)."""
     conversations = _scan_conversations(LOG_DIR)
+    conversations.sort(key=lambda c: c.last_timestamp, reverse=True)
     return _render(
         "conversations.html",
         {
