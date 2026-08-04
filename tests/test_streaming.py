@@ -346,11 +346,35 @@ class TestThinkingOnlyDetection:
         ]
         assert not _is_thinking_only_completion(chunks)
 
+    def test_detects_reasoning_content_only_stream(self):
+        from proxy.streaming import _is_thinking_only_completion
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"reasoning_content":"let me think"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"reasoning_content":"still thinking"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        ]
+        assert _is_thinking_only_completion(chunks)
+
+    def test_does_not_detect_reasoning_followed_by_text(self):
+        from proxy.streaming import _is_thinking_only_completion
+        chunks = [
+            b'data: {"choices":[{"index":0,"delta":{"reasoning":"thinking"},"finish_reason":null}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}\n\n',
+        ]
+        assert not _is_thinking_only_completion(chunks)
+
     def test_build_thinking_retry_body_halves_budget(self):
         from proxy.streaming import _build_thinking_retry_body
         body = {"model": "test", "thinking_budget": 4096, "stream": True}
         retry_body = _build_thinking_retry_body(body)
         assert retry_body["thinking_budget"] == 2048
+
+    def test_build_thinking_retry_body_adds_hint_without_budget(self):
+        from proxy.streaming import _build_thinking_retry_body
+        body = {"model": "test", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+        retry_body = _build_thinking_retry_body(body)
+        assert retry_body["messages"][0]["role"] == "system"
+        assert retry_body != body
 
     def test_build_thinking_retry_body_halves_to_zero_removes_field(self):
         from proxy.streaming import _build_thinking_retry_body
@@ -439,3 +463,69 @@ class TestThinkingOnlyDetection:
         # Second call should have halved budget
         retry_body = mock_client.stream.call_args_list[1].kwargs["json"]
         assert retry_body["thinking_budget"] == 2048
+
+
+class TestResponseTokenScrubbing:
+    """Stripping literal special tokens emitted by the model as text."""
+
+    def test_removes_endoftext_from_delta(self):
+        from proxy.streaming import _SSETokenScrubber
+
+        scrubber = _SSETokenScrubber()
+        line = b'data: {"choices":[{"delta":{"reasoning_content":"done<|endoftext|>"}}]}\n\n'
+        out = scrubber.process(line) + scrubber.flush()
+        assert b"endoftext" not in out
+        assert b'"reasoning_content":"done"' in out
+
+    def test_passes_through_unaffected_lines_verbatim(self):
+        from proxy.streaming import _SSETokenScrubber
+
+        scrubber = _SSETokenScrubber()
+        line = b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+        out = scrubber.process(line) + scrubber.flush()
+        assert out == line
+
+    def test_handles_token_split_across_chunks(self):
+        from proxy.streaming import _SSETokenScrubber
+
+        scrubber = _SSETokenScrubber()
+        out = scrubber.process(b'data: {"choices":[{"delta":{"content":"a<|end')
+        out += scrubber.process(b'oftext|>b"}}]}\n\n')
+        out += scrubber.flush()
+        assert b'"content":"ab"' in out
+
+    @pytest.mark.asyncio
+    async def test_scrubs_streaming_response_end_to_end(self, minimal_config):
+        chunks = [
+            b'data: {"choices":[{"delta":{"content":"hi<|im_end|>"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+
+        stream_context = MagicMock()
+        stream_context.__aenter__ = AsyncMock(return_value=stream_context)
+        stream_context.__aexit__ = AsyncMock(return_value=None)
+        stream_context.headers = {"content-type": "text/event-stream"}
+        stream_context.status_code = 200
+
+        async def _aiter_bytes():
+            for chunk in chunks:
+                yield chunk
+
+        stream_context.aiter_bytes = _aiter_bytes
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=stream_context)
+
+        response = await forward_request(
+            client=mock_client,
+            local_ai_server_url="http://127.0.0.1:8000",
+            method="POST",
+            path="/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            body={"model": "test", "stream": True, "messages": []},
+            proxy_config=minimal_config,
+        )
+
+        combined = b"".join([c async for c in response.body_iterator])
+        assert b"im_end" not in combined
+        assert b'"content":"hi"' in combined

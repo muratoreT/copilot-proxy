@@ -131,37 +131,78 @@
         const container = document.createElement('div');
         container.className = 'reconstructed-response';
 
-        // Metadata badges (finish_reason, usage)
-        const metaParts = [];
+        // Response metadata as properties rows
+        const responseProps = [];
         if (respBody.finish_reason) {
-            metaParts.push('<span class="meta-badge">finish: ' + escapeHtml(respBody.finish_reason) + '</span>');
+            responseProps.push({ key: 'finish_reason', value: String(respBody.finish_reason) });
         }
-        if (respBody.usage) {
+        if (respBody.usage && typeof respBody.usage === 'object') {
             const u = respBody.usage;
-            const parts = [];
-            if (u.completion_tokens) parts.push('completion: ' + u.completion_tokens);
-            if (u.prompt_tokens) parts.push('prompt: ' + u.prompt_tokens);
-            if (u.total_tokens) parts.push('total: ' + u.total_tokens);
-            if (parts.length) {
-                metaParts.push('<span class="meta-badge">tokens: ' + parts.join(', ') + '</span>');
+            if (u.completion_tokens !== undefined && u.completion_tokens !== null) {
+                responseProps.push({ key: 'completion_tokens', value: String(u.completion_tokens) });
+            }
+            if (u.prompt_tokens !== undefined && u.prompt_tokens !== null) {
+                responseProps.push({ key: 'prompt_tokens', value: String(u.prompt_tokens) });
+            }
+            if (u.total_tokens !== undefined && u.total_tokens !== null) {
+                responseProps.push({ key: 'total_tokens', value: String(u.total_tokens) });
             }
         }
         if (respBody._truncated) {
-            metaParts.push('<span class="meta-badge warning">⚠ ' + escapeHtml(respBody._truncated_msg || 'Truncated') + '</span>');
+            responseProps.push({ key: '_truncated', value: 'true' });
+            if (respBody._truncated_msg) {
+                responseProps.push({ key: '_truncated_msg', value: String(respBody._truncated_msg) });
+            }
         }
-        if (metaParts.length) {
-            const metaDiv = document.createElement('div');
-            metaDiv.className = 'response-meta';
-            metaDiv.innerHTML = metaParts.join(' ');
-            container.appendChild(metaDiv);
+        // Properties section between Headers and Content
+        if (responseProps.length) {
+            const propsSection = document.createElement('div');
+            propsSection.className = 'properties-section';
+
+            const propsHeading = document.createElement('h4');
+            propsHeading.className = 'properties-heading';
+            propsHeading.textContent = 'Properties';
+            propsSection.appendChild(propsHeading);
+
+            const propsTable = document.createElement('table');
+            propsTable.className = 'properties-table';
+
+            responseProps.forEach(({ key, value }) => {
+                const row = document.createElement('tr');
+
+                const keyCell = document.createElement('td');
+                keyCell.className = 'property-key';
+                keyCell.textContent = key;
+
+                const valCell = document.createElement('td');
+                valCell.className = 'property-value';
+                valCell.textContent = value;
+
+                row.appendChild(keyCell);
+                row.appendChild(valCell);
+                propsTable.appendChild(row);
+            });
+
+            propsSection.appendChild(propsTable);
+            container.appendChild(propsSection);
         }
 
-        // Content as plain text
+        // Content section with wrapped message text
         if (respBody.content) {
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'response-content-block';
-            contentDiv.innerHTML = '<h4>Content</h4><pre class="response-text">' + escapeHtml(respBody.content) + '</pre>';
-            container.appendChild(contentDiv);
+            const contentDetails = document.createElement('details');
+            contentDetails.className = 'collapsible';
+            contentDetails.open = true;
+
+            const summary = document.createElement('summary');
+            summary.textContent = 'Content';
+            contentDetails.appendChild(summary);
+
+            const pre = document.createElement('pre');
+            pre.className = 'response-text';
+            pre.textContent = respBody.content;
+            contentDetails.appendChild(pre);
+
+            container.appendChild(contentDetails);
         }
 
         // Reasoning as collapsible
@@ -174,14 +215,18 @@
 
         // Tool calls as JSON
         if (respBody.tool_calls && respBody.tool_calls.length > 0) {
-            const tcDiv = document.createElement('div');
-            tcDiv.className = 'response-content-block';
-            tcDiv.innerHTML = '<h4>Tool Calls (' + respBody.tool_calls.length + ')</h4>';
+            const tcDetails = document.createElement('details');
+            tcDetails.className = 'collapsible';
+            const tcSummary = document.createElement('summary');
+            tcSummary.textContent = 'Tool Calls (' + respBody.tool_calls.length + ')';
+            tcDetails.appendChild(tcSummary);
+
             const pre = document.createElement('pre');
             pre.className = 'json-block';
             pre.textContent = JSON.stringify(respBody.tool_calls, null, 2);
-            tcDiv.appendChild(pre);
-            container.appendChild(tcDiv);
+            tcDetails.appendChild(pre);
+
+            container.appendChild(tcDetails);
         }
 
         respSection.appendChild(container);

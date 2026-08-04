@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import time
 from typing import Optional
 
@@ -15,6 +16,47 @@ from .debuglogging import DebugLogger
 from .models import ProxyConfig
 
 logger = logging.getLogger(__name__)
+
+# Some models (notably Qwen3 finetunes) emit control tokens as literal text
+# instead of terminating. Left in the stream they render as garbage, and they
+# poison the next request's history once the client echoes them back.
+_RESPONSE_SPECIAL_TOKEN_RE = re.compile(
+    r"<\|(?:endoftext|im_start|im_end|end_of_text|eot_id|eom_id|"
+    r"start_header_id|end_header_id|tool_call|/tool_call)\|>"
+)
+
+
+class _SSETokenScrubber:
+    """Removes literal special tokens from an SSE byte stream.
+
+    Buffers partial lines so a token split across chunk boundaries is still
+    matched. Lines without a ``<|`` marker are passed through byte-for-byte.
+    """
+
+    def __init__(self) -> None:
+        self._pending = b""
+
+    def process(self, chunk: bytes) -> bytes:
+        data = self._pending + chunk
+        head, sep, tail = data.rpartition(b"\n")
+        if not sep:
+            self._pending = data
+            return b""
+        self._pending = tail
+        return self._scrub(head + sep)
+
+    def flush(self) -> bytes:
+        remainder = self._pending
+        self._pending = b""
+        return self._scrub(remainder) if remainder else b""
+
+    @staticmethod
+    def _scrub(data: bytes) -> bytes:
+        if b"<|" not in data:
+            return data
+        # Line boundaries never split a UTF-8 sequence, so decoding is safe.
+        text = data.decode("utf-8", errors="replace")
+        return _RESPONSE_SPECIAL_TOKEN_RE.sub("", text).encode("utf-8")
 
 
 def _extract_reasoning_from_delta(delta: dict) -> Optional[str]:
@@ -171,21 +213,13 @@ def _is_empty_stream_completion(chunks: list[bytes]) -> bool:
     )
 
 
-def _build_retry_body(body: Optional[dict]) -> Optional[dict]:
-    """Create a retried request body with a non-empty-response hint."""
-    if body is None:
-        return None
-
-    retried = copy.deepcopy(body)
+def _append_system_hint(retried: dict, hint: str) -> None:
+    """Merge a hint into the leading system message, or insert one."""
     messages = retried.get("messages")
     if not isinstance(messages, list):
         messages = []
         retried["messages"] = messages
 
-    retry_hint = (
-        "After tool results, return a non-empty assistant response. "
-        "Do not end with an empty completion."
-    )
     if (
         messages
         and isinstance(messages[0], dict)
@@ -193,24 +227,38 @@ def _build_retry_body(body: Optional[dict]) -> Optional[dict]:
     ):
         system_content = messages[0].get("content")
         if isinstance(system_content, list):
-            system_content.append({"type": "text", "text": retry_hint})
+            system_content.append({"type": "text", "text": hint})
         else:
             messages[0]["content"] = (
-                f"{system_content}\n\n{retry_hint}"
+                f"{system_content}\n\n{hint}"
                 if isinstance(system_content, str) and system_content
-                else retry_hint
+                else hint
             )
     else:
-        messages.insert(0, {"role": "system", "content": retry_hint})
+        messages.insert(0, {"role": "system", "content": hint})
 
+
+def _build_retry_body(body: Optional[dict]) -> Optional[dict]:
+    """Create a retried request body with a non-empty-response hint."""
+    if body is None:
+        return None
+
+    retried = copy.deepcopy(body)
+    _append_system_hint(
+        retried,
+        "After tool results, return a non-empty assistant response. "
+        "Do not end with an empty completion.",
+    )
     return retried
 
 
 def _is_thinking_only_completion(chunks: list[bytes]) -> bool:
     """Detect streams that produced only thinking content with no text output.
 
-    Returns True when all content parts are ``type: thinking`` and there is
-    zero ``type: text`` content and no tool calls.
+    Covers both the Qwen ``content_parts[type=thinking]`` format and the
+    vLLM/OpenAI ``reasoning_content`` / ``reasoning`` delta fields. Returns
+    True when reasoning was produced but there is zero text content and no
+    tool calls.
     """
     if not chunks:
         return False
@@ -254,6 +302,9 @@ def _is_thinking_only_completion(chunks: list[bytes]) -> bool:
                                     has_thinking = True
                                 elif part.get("type") == "text":
                                     has_text = True
+                    # reasoning_content / reasoning fields (vLLM, OpenAI)
+                    if _extract_reasoning_from_delta(delta) is not None:
+                        has_thinking = True
                     if delta.get("tool_calls"):
                         has_tool_calls = True
 
@@ -275,6 +326,15 @@ def _build_thinking_retry_body(body: Optional[dict]) -> Optional[dict]:
         else:
             # Budget reached 0 — remove the field entirely
             retried.pop("thinking_budget", None)
+
+    # Backends without thinking_budget support need a prompt-level nudge,
+    # otherwise the retry is an exact repeat of the failing request.
+    _append_system_hint(
+        retried,
+        "Keep internal reasoning short and always finish the turn with a "
+        "visible assistant message or a tool call. Never write raw model "
+        "control tokens as output text.",
+    )
 
     return retried
 
@@ -702,10 +762,14 @@ def _handle_streaming_response(
         retries_left = max_retries
         active_json_body = json_body
         retry_count = 0  # Track how many retries were actually performed
+        scrub_enabled = bool(
+            proxy_config and proxy_config.rewrite.scrub_response_special_tokens
+        )
 
         try:
             while True:
                 buffered_chunks: list[bytes] = []
+                scrubber = _SSETokenScrubber() if scrub_enabled else None
                 # Track whether we've started streaming through (optimistic passthrough)
                 streaming_through = False
                 async with client.stream(
@@ -744,6 +808,10 @@ def _handle_streaming_response(
                         )
 
                     async for chunk in response.aiter_bytes():
+                        if scrubber is not None:
+                            chunk = scrubber.process(chunk)
+                            if not chunk:
+                                continue
                         # Finding D: stream through optimistically once we see real content
                         # This avoids buffering the entire stream (which kills TTFT)
                         # while still catching empty completions for retry.
@@ -783,6 +851,22 @@ def _handle_streaming_response(
                                     debug_exchange_num,
                                     debug_logger.config.max_response_size_mb,
                                 )
+
+                    if scrubber is not None:
+                        tail = scrubber.flush()
+                        if tail:
+                            if retry_enabled and not streaming_through:
+                                buffered_chunks.append(tail)
+                            else:
+                                yield tail
+                            if (
+                                debug_logger
+                                and debug_logger.enabled
+                                and debug_conv_key
+                                and not truncated
+                                and len(accumulated_body) + len(tail) <= max_bytes
+                            ):
+                                accumulated_body.extend(tail)
 
                 # Empty completion retry (only if we never started streaming through)
                 if retry_enabled and not streaming_through and _is_empty_stream_completion(buffered_chunks):

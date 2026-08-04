@@ -19,6 +19,7 @@ rewrite:
   clamp_max_tokens: true
   normalize_tool_vision: true
   sanitize_special_tokens: true
+  scrub_response_special_tokens: true
   remove_reasoning: false
   inject_thinking_budget: false
   thinking_budget: 1024

@@ -74,6 +74,13 @@ class RewriteConfig(BaseModel):
             "not misinterpret them as control tokens."
         ),
     )
+    scrub_response_special_tokens: bool = Field(
+        default=True,
+        description=(
+            "If True, strip literal special tokens the model emits as text "
+            "(e.g. <|endoftext|> inside reasoning) from streaming responses."
+        ),
+    )
     remove_reasoning: bool = Field(
         default=False,
         description="If True, strip reasoning-related fields.",

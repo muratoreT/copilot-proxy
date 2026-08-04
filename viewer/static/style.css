@@ -470,6 +470,12 @@ footer code {
     margin-bottom: 0.75rem;
 }
 
+.response-inline-meta {
+    padding: 0.6rem 1rem 0.25rem;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+}
+
 .meta-badge {
     display: inline-block;
     padding: 2px 10px;
@@ -510,7 +516,11 @@ footer code {
     font-size: 0.85rem;
     line-height: 1.6;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-wrap: break-word;
     word-break: break-word;
+    max-width: 100%;
+    overflow-x: hidden;
     color: var(--text);
     margin: 0;
 }
