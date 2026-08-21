@@ -1,17 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Log Viewer{% endblock %}</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
     <header>
         <h1><a href="/">Copilot Proxy Log Viewer</a></h1>
         <nav>
             {% block breadcrumbs %}{% endblock %}
         </nav>
+        {% block navigation %}{% endblock %}
     </header>
     <main>
         {% block content %}{% endblock %}
@@ -21,4 +24,5 @@
     </footer>
     {% block scripts %}{% endblock %}
 </body>
+
 </html>

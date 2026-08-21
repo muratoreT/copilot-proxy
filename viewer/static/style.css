@@ -44,9 +44,13 @@ a:hover {
 
 /* Header */
 header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
     padding: 1rem 2rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 header h1 {
@@ -420,11 +424,8 @@ footer code {
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    margin-bottom: 1.5rem;
-    padding: 0.75rem 1rem;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    margin-top: 0.5rem;
+    padding: 0.5rem 0;
     font-size: 0.9rem;
 }
 

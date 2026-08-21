@@ -8,7 +8,7 @@
 <strong>Exchange {{ exchange.get('exchange', '?') }}</strong>
 {% endblock %}
 
-{% block content %}
+{% block navigation %}
 <div class="exchange-navigation">
     <a href="/conversation/{{ conv_key }}" class="nav-link back">
         ✕ Back to List
@@ -32,7 +32,9 @@
     <span class="nav-link disabled">Last →</span>
     {% endif %}
 </div>
+{% endblock %}
 
+{% block content %}
 <h2>Exchange {{ exchange.get('exchange', '?') }}</h2>
 
 {% if exchange.get('retry_count', 0) > 0 %}

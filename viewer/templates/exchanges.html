@@ -6,14 +6,16 @@
 <a href="/">Conversations</a> &rsaquo; <strong>{{ conversation.key }}</strong>
 {% endblock %}
 
-{% block content %}
+{% block navigation %}
 <div class="exchange-navigation">
     <a href="/" class="nav-link back">
         ✕ Back to Home
     </a>
     <span class="nav-info">Conversation: {{ conversation.key }} — {{ conversation.exchange_count }} exchange(s)</span>
 </div>
+{% endblock %}
 
+{% block content %}
 <table class="data-table">
     <thead>
         <tr>
@@ -28,7 +30,8 @@
     </thead>
     <tbody>
         {% for ex in conversation.exchanges %}
-        <tr class="clickable" onclick="window.location.href='/conversation/{{ conversation.key }}/exchange/{{ ex.num }}'">
+        <tr class="clickable"
+            onclick="window.location.href='/conversation/{{ conversation.key }}/exchange/{{ ex.num }}'">
             <td>
                 <a href="/conversation/{{ conversation.key }}/exchange/{{ ex.num }}" onclick="event.stopPropagation()">
                     {{ ex.num }}
@@ -43,22 +46,22 @@
             </td>
             <td class="duration">
                 {% if ex.response_duration_ms is not none %}
-                    {% if ex.response_duration_ms > 999 %}
-                        {{ "%.1f"|format(ex.response_duration_ms / 1000) }} s
-                    {% else %}
-                        {{ "%.1f"|format(ex.response_duration_ms) }} ms
-                    {% endif %}
+                {% if ex.response_duration_ms > 999 %}
+                {{ "%.1f"|format(ex.response_duration_ms / 1000) }} s
                 {% else %}
-                    —
+                {{ "%.1f"|format(ex.response_duration_ms) }} ms
+                {% endif %}
+                {% else %}
+                —
                 {% endif %}
             </td>
             <td class="retry">
                 {% if ex.retry_count > 0 %}
-                    <span class="retry-badge" title="Retried {{ ex.retry_count }} time(s)">
-                        ⚡ {{ ex.retry_count }}
-                    </span>
+                <span class="retry-badge" title="Retried {{ ex.retry_count }} time(s)">
+                    ⚡ {{ ex.retry_count }}
+                </span>
                 {% else %}
-                    <span class="no-retry">—</span>
+                <span class="no-retry">—</span>
                 {% endif %}
             </td>
             <td class="timestamp" data-timestamp="{{ ex.request_timestamp }}"></td>
