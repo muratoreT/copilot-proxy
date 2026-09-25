@@ -136,9 +136,9 @@ class TestTemperatureAndTopP:
 
 
 class TestThinkingBudget:
-    """thinking_budget injection."""
+    """thinking_token_budget injection."""
 
-    def test_injects_thinking_budget_when_enabled(self):
+    def test_injects_thinking_token_budget_when_enabled(self):
         config = ProxyConfig(
             listen=ListenConfig(),
             localAIServer=LocalAIServerConfig(),
@@ -152,9 +152,9 @@ class TestThinkingBudget:
         body = {"model": "test", "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
         assert modified is True
-        assert result["thinking_budget"] == 512
+        assert result["thinking_token_budget"] == 512
 
-    def test_does_not_override_existing_thinking_budget(self):
+    def test_does_not_override_existing_thinking_token_budget(self):
         config = ProxyConfig(
             listen=ListenConfig(),
             localAIServer=LocalAIServerConfig(),
@@ -165,15 +165,15 @@ class TestThinkingBudget:
                 thinking_budget=512,
             ),
         )
-        body = {"model": "test", "thinking_budget": 256, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 256, "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
-        assert result["thinking_budget"] == 256
+        assert result["thinking_token_budget"] == 256
 
 
 class TestThinkingBudgetClamping:
     """max_thinking_budget clamping: client sends budget > max → clamped."""
 
-    def test_clamps_thinking_budget_when_exceeding_max(self):
+    def test_clamps_thinking_token_budget_when_exceeding_max(self):
         config = ProxyConfig(
             listen=ListenConfig(),
             localAIServer=LocalAIServerConfig(),
@@ -183,10 +183,10 @@ class TestThinkingBudgetClamping:
                 max_thinking_budget=1024,
             ),
         )
-        body = {"model": "test", "thinking_budget": 65536, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 65536, "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
         assert modified is True
-        assert result["thinking_budget"] == 1024
+        assert result["thinking_token_budget"] == 1024
 
     def test_does_not_clamp_when_under_max(self):
         config = ProxyConfig(
@@ -198,9 +198,9 @@ class TestThinkingBudgetClamping:
                 max_thinking_budget=4096,
             ),
         )
-        body = {"model": "test", "thinking_budget": 512, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 512, "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
-        assert result["thinking_budget"] == 512
+        assert result["thinking_token_budget"] == 512
 
     def test_injection_respects_max_ceiling(self):
         config = ProxyConfig(
@@ -217,7 +217,7 @@ class TestThinkingBudgetClamping:
         body = {"model": "test", "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
         assert modified is True
-        assert result["thinking_budget"] == 2048
+        assert result["thinking_token_budget"] == 2048
 
     def test_no_clamping_when_max_not_set(self):
         config = ProxyConfig(
@@ -229,9 +229,9 @@ class TestThinkingBudgetClamping:
                 max_thinking_budget=None,
             ),
         )
-        body = {"model": "test", "thinking_budget": 65536, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 65536, "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
-        assert result["thinking_budget"] == 65536
+        assert result["thinking_token_budget"] == 65536
 
     def test_clamp_and_inject_work_together(self):
         """Clamp happens first, then inject only if still absent."""
@@ -247,10 +247,10 @@ class TestThinkingBudgetClamping:
             ),
         )
         # Client sends high budget → clamped to max
-        body = {"model": "test", "thinking_budget": 65536, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 65536, "stream": True}
         result, modified = rewrite_request(copy.deepcopy(body), config)
         assert modified is True
-        assert result["thinking_budget"] == 2048
+        assert result["thinking_token_budget"] == 2048
 
 
 class TestReasoningRemoval:
@@ -266,11 +266,18 @@ class TestReasoningRemoval:
                 remove_reasoning=True,
             ),
         )
-        body = {"model": "test", "stream": True, "reasoning": "some reasoning", "reasoning_effort": "high"}
+        body = {
+            "model": "test",
+            "stream": True,
+            "reasoning": "some reasoning",
+            "reasoning_effort": "high",
+            "thinking_token_budget": 2048,
+        }
         result, modified = rewrite_request(copy.deepcopy(body), config)
         assert modified is True
         assert "reasoning" not in result
         assert "reasoning_effort" not in result
+        assert "thinking_token_budget" not in result
 
     def test_keeps_reasoning_when_disabled(self):
         config = ProxyConfig(

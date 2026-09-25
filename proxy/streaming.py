@@ -312,22 +312,26 @@ def _is_thinking_only_completion(chunks: list[bytes]) -> bool:
 
 
 def _build_thinking_retry_body(body: Optional[dict]) -> Optional[dict]:
-    """Create a retry body for thinking-only streams (halve thinking_budget)."""
+    """Create a retry body for thinking-only streams (halve the active budget)."""
     if body is None:
         return None
 
     retried = copy.deepcopy(body)
-    current_budget = retried.get("thinking_budget")
+    current_budget = retried.get("thinking_token_budget")
+    if current_budget is None:
+        current_budget = retried.get("thinking_budget")
 
     if current_budget is not None and isinstance(current_budget, int):
         halved = current_budget // 2
         if halved > 0:
-            retried["thinking_budget"] = halved
+            retried["thinking_token_budget"] = halved
+            retried.pop("thinking_budget", None)
         else:
             # Budget reached 0 — remove the field entirely
+            retried.pop("thinking_token_budget", None)
             retried.pop("thinking_budget", None)
 
-    # Backends without thinking_budget support need a prompt-level nudge,
+    # Backends without this budget field need a prompt-level nudge,
     # otherwise the retry is an exact repeat of the failing request.
     _append_system_hint(
         retried,

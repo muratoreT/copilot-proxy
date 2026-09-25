@@ -25,7 +25,7 @@ def default_config():
             clamp_max_tokens=True,
             remove_reasoning=False,
             inject_thinking_budget=False,
-            thinking_budget=1024,
+            thinking_budget=4096,
         ),
         models={},
     )
@@ -43,7 +43,7 @@ def config_with_model_overrides():
             clamp_max_tokens=True,
             remove_reasoning=False,
             inject_thinking_budget=False,
-            thinking_budget=1024,
+            thinking_budget=4096,
         ),
         models={
             "model-large": ModelOverride(max_tokens=8192),

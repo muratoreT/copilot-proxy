@@ -87,19 +87,22 @@ class RewriteConfig(BaseModel):
     )
     inject_thinking_budget: bool = Field(
         default=False,
-        description="If True, inject a thinking_budget field.",
+        description="If True, inject a thinking_token_budget field.",
     )
     thinking_budget: Optional[int] = Field(
-        default=1024,
+        default=4096,
         ge=0,
-        description="Thinking budget value to inject when enabled.",
+        description=(
+            "Thinking budget value to inject when enabled; sent upstream as "
+            "thinking_token_budget."
+        ),
     )
     max_thinking_budget: Optional[int] = Field(
         default=None,
         ge=1,
         description=(
-            "Hard ceiling for thinking_budget. If the client sends a "
-            "thinking_budget higher than this, it is clamped down."
+            "Hard ceiling for the thinking budget. If the client sends a "
+            "thinking_token_budget higher than this, it is clamped down."
         ),
     )
 

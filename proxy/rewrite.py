@@ -268,36 +268,42 @@ def rewrite_request(
         modified["top_p"] = effective_top_p
         was_modified = True
 
-    # --- thinking_budget clamping + injection ---
+    # --- thinking_token_budget clamping + injection ---
+    budget_key = "thinking_token_budget"
+    legacy_budget_key = "thinking_budget"
+    if legacy_budget_key in modified and budget_key not in modified:
+        modified[budget_key] = modified.pop(legacy_budget_key)
+        was_modified = True
+
+    existing_budget = modified.get(budget_key)
+
     max_budget = config.rewrite.max_thinking_budget
-    if max_budget is not None and "thinking_budget" in body:
-        if body["thinking_budget"] > max_budget:
-            modified["thinking_budget"] = max_budget
+    if max_budget is not None and existing_budget is not None:
+        if existing_budget > max_budget:
+            modified[budget_key] = max_budget
             was_modified = True
 
     if (
         config.rewrite.inject_thinking_budget
         and config.rewrite.thinking_budget is not None
     ):
-        if "thinking_budget" not in body:
+        if budget_key not in modified:
             # Inject the configured budget, capped by max if set
             effective = (
                 min(config.rewrite.thinking_budget, max_budget)
                 if max_budget is not None
                 else config.rewrite.thinking_budget
             )
-            modified["thinking_budget"] = effective
+            modified[budget_key] = effective
             was_modified = True
 
     # --- remove_reasoning ---
     if config.rewrite.remove_reasoning:
         # Remove reasoning-related fields if present
-        if "reasoning" in modified:
-            del modified["reasoning"]
-            was_modified = True
-        if "reasoning_effort" in modified:
-            del modified["reasoning_effort"]
-            was_modified = True
+        for key in ("reasoning", "reasoning_effort", budget_key, legacy_budget_key):
+            if key in modified:
+                del modified[key]
+                was_modified = True
 
     return modified, was_modified
 

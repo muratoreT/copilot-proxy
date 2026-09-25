@@ -51,7 +51,12 @@ class ExchangeData:
     # Retry info
     retry_count: int = 0
 
-    # Internal
+    # Timing breakdown (serialized to disk)
+    ttft_ms: Optional[float] = None
+    stream_duration_ms: Optional[float] = None
+
+    # Internal (not serialized)
+    _request_start_time: Optional[float] = None
     _response_start_time: Optional[float] = None
 
 
@@ -157,6 +162,7 @@ class DebugLogger:
                 request_path=path,
                 request_headers=safe_headers,
                 request_body=body,
+                _request_start_time=time.monotonic(),
             )
 
             # Track exchange
@@ -217,6 +223,13 @@ class DebugLogger:
             target.response_body = body
             target.response_duration_ms = round(duration_ms, 2)
             target.retry_count = retry_count
+
+            # Compute timing breakdown (TTFT + stream duration)
+            if target._request_start_time is not None and target._response_start_time is not None:
+                ttft = (target._response_start_time - target._request_start_time) * 1000
+                target.ttft_ms = round(ttft, 2)
+                target.stream_duration_ms = round(duration_ms - ttft, 2)
+            # Else: non-streaming or missing data — ttft_ms stays None
 
             # Truncation — serialize to check size
             body_json = json.dumps(body, ensure_ascii=False)
@@ -280,6 +293,8 @@ class DebugLogger:
                 "headers": exchange.response_headers,
                 "body": exchange.response_body,
                 "duration_ms": exchange.response_duration_ms,
+                "ttft_ms": exchange.ttft_ms,
+                "stream_duration_ms": exchange.stream_duration_ms,
             },
         }
 

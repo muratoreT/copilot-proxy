@@ -1,0 +1,79 @@
+{% set duration_ms = exchange.response.duration_ms %}
+{% set ttft_ms = exchange.response.get('ttft_ms') %}
+{% set stream_ms = exchange.response.get('stream_duration_ms') %}
+{% set status_code = exchange.response.status_code %}
+
+{% if duration_ms and duration_ms > 0 %}
+<div class="time-bar-wrapper">
+    <div class="time-bar-label">Time Breakdown</div>
+
+    {% if status_code and status_code >= 400 %}
+    {# Error response — single red segment #}
+    <div class="time-bar">
+        <div class="time-bar-segment error" style="flex: 1 1 100%;" title="Error: {{ " %.1f"|format(duration_ms) }} ms">
+            Error {{ "%.0f"|format(duration_ms) }}ms
+        </div>
+    </div>
+    <div class="time-bar-legend">
+        <span class="time-bar-legend-item">
+            <span class="time-bar-legend-swatch error"></span> Error response
+        </span>
+    </div>
+
+    {% elif ttft_ms is not none and stream_ms is not none %}
+    {# Streaming response — 3-segment breakdown #}
+    {% set overhead_ms = duration_ms - ttft_ms - stream_ms %}
+    {% set ttft_pct = (ttft_ms / duration_ms * 100) if duration_ms > 0 else 0 %}
+    {% set stream_pct = (stream_ms / duration_ms * 100) if duration_ms > 0 else 0 %}
+    {% set overhead_pct = (overhead_ms / duration_ms * 100) if duration_ms > 0 else 0 %}
+
+    <div class="time-bar">
+        {% if ttft_pct > 0 %}
+        <div class="time-bar-segment ttft" style="flex: 1 1 {{ " %.1f"|format(ttft_pct) }}%;"
+            title="Time to First Token: {{ " %.1f"|format(ttft_ms) }} ms">
+            {% if ttft_pct > 8 %}TTFT {{ "%.0f"|format(ttft_ms) }}ms{% endif %}
+        </div>
+        {% endif %}
+        {% if stream_pct > 0 %}
+        <div class="time-bar-segment stream" style="flex: 1 1 {{ " %.1f"|format(stream_pct) }}%;"
+            title="Stream Duration: {{ " %.1f"|format(stream_ms) }} ms">
+            {% if stream_pct > 8 %}Stream {{ "%.0f"|format(stream_ms) }}ms{% endif %}
+        </div>
+        {% endif %}
+        {% if overhead_pct > 0 %}
+        <div class="time-bar-segment overhead" style="flex: 1 1 {{ " %.1f"|format(overhead_pct) }}%;"
+            title="Overhead: {{ " %.1f"|format(overhead_ms) }} ms">
+            {% if overhead_pct > 8 %}{{ "%.0f"|format(overhead_ms) }}ms{% endif %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="time-bar-legend">
+        <span class="time-bar-legend-item">
+            <span class="time-bar-legend-swatch ttft"></span> TTFT ({{ "%.1f"|format(ttft_ms) }}ms)
+        </span>
+        <span class="time-bar-legend-item">
+            <span class="time-bar-legend-swatch stream"></span> Stream ({{ "%.1f"|format(stream_ms) }}ms)
+        </span>
+        {% if overhead_ms > 0 %}
+        <span class="time-bar-legend-item">
+            <span class="time-bar-legend-swatch overhead"></span> Overhead ({{ "%.1f"|format(overhead_ms) }}ms)
+        </span>
+        {% endif %}
+    </div>
+
+    {% else %}
+    {# Non-streaming or no breakdown — single green segment #}
+    <div class="time-bar">
+        <div class="time-bar-segment full" style="flex: 1 1 100%;" title="Full Response: {{ " %.1f"|format(duration_ms)
+            }} ms">
+            Response {{ "%.0f"|format(duration_ms) }}ms
+        </div>
+    </div>
+    <div class="time-bar-legend">
+        <span class="time-bar-legend-item">
+            <span class="time-bar-legend-swatch full"></span> Full response (no breakdown available)
+        </span>
+    </div>
+    {% endif %}
+</div>
+{% endif %}

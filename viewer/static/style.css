@@ -418,6 +418,111 @@ footer code {
     border-bottom: none;
 }
 
+/* Time bar */
+.time-bar-wrapper {
+    margin: 1rem 0 1.5rem;
+}
+
+.time-bar-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.time-bar {
+    display: flex;
+    height: 28px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.time-bar-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 30px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: 'Consolas', 'Courier New', monospace;
+    color: var(--bg);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0 6px;
+    transition: filter 0.15s;
+}
+
+.time-bar-segment:hover {
+    filter: brightness(1.15);
+}
+
+.time-bar-segment.ttft {
+    background: var(--peach);
+}
+
+.time-bar-segment.stream {
+    background: var(--green);
+}
+
+.time-bar-segment.overhead {
+    background: var(--overlay0, #494d64);
+    color: var(--text-muted);
+}
+
+.time-bar-segment.full {
+    background: var(--green);
+}
+
+.time-bar-segment.error {
+    background: var(--red);
+}
+
+.time-bar-legend {
+    display: flex;
+    gap: 1.25rem;
+    margin-top: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.time-bar-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.time-bar-legend-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.time-bar-legend-swatch.ttft {
+    background: var(--peach);
+}
+
+.time-bar-legend-swatch.stream {
+    background: var(--green);
+}
+
+.time-bar-legend-swatch.overhead {
+    background: var(--overlay0, #494d64);
+}
+
+.time-bar-legend-swatch.full {
+    background: var(--green);
+}
+
+.time-bar-legend-swatch.error {
+    background: var(--red);
+}
+
 /* Exchange navigation */
 .exchange-navigation {
     display: flex;

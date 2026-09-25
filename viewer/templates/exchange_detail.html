@@ -37,6 +37,8 @@
 {% block content %}
 <h2>Exchange {{ exchange.get('exchange', '?') }}</h2>
 
+{% include 'time_bar.html' %}
+
 {% if exchange.get('retry_count', 0) > 0 %}
 <div class="retry-notice">
     ⚡ This exchange was retried {{ exchange.retry_count }} time(s) due to empty streaming completion(s).

@@ -85,7 +85,7 @@ rewrite:
   normalize_tool_vision: true
   remove_reasoning: false
   inject_thinking_budget: false
-  thinking_budget: 1024
+  thinking_budget: 4096
   max_thinking_budget: null
 
 debug:
@@ -148,21 +148,23 @@ models:
 
 #### `rewrite` — Request Body Rewriting Rules
 
-| Key                      | Type | Default | Description                                                     |
-| ------------------------ | ---- | ------- | --------------------------------------------------------------- |
-| `clamp_max_tokens`       | bool | `true`  | Clamp `max_tokens` to the configured limit                      |
-| `normalize_tool_vision`  | bool | `false` | Move image content from tool messages into user messages        |
-| `remove_reasoning`       | bool | `false` | Strip reasoning-related fields from requests                    |
-| `inject_thinking_budget` | bool | `false` | Inject a `thinking_budget` field when absent                    |
-| `thinking_budget`        | int  | `1024`  | Thinking budget value to inject (0 disables)                    |
-| `max_thinking_budget`    | int  | `null`  | Hard ceiling for thinking_budget; clamps client values above it |
+| Key                      | Type | Default | Description                                                               |
+| ------------------------ | ---- | ------- | ------------------------------------------------------------------------- |
+| `clamp_max_tokens`       | bool | `true`  | Clamp `max_tokens` to the configured limit                                |
+| `normalize_tool_vision`  | bool | `false` | Move image content from tool messages into user messages                  |
+| `remove_reasoning`       | bool | `false` | Strip reasoning-related fields from requests                              |
+| `inject_thinking_budget` | bool | `false` | Inject a `thinking_token_budget` field when absent                        |
+| `thinking_budget`        | int  | `4096`  | Thinking budget value to inject; sent upstream as `thinking_token_budget` |
+| `max_thinking_budget`    | int  | `null`  | Hard ceiling for the thinking budget; clamps client values above it       |
 
 > **When to change:**
 >
 > - Enable `clamp_max_tokens` to prevent requests from exceeding your model's token limits.
 > - Enable `normalize_tool_vision` when using LM Studio with tool-use + vision (it doesn't support images in tool messages).
 > - Set `max_thinking_budget` to cap how much the model can "think" regardless of what the client requests.
-> - Enable `inject_thinking_budget` for models that support extended thinking (e.g., Qwen3 reasoning models).
+> - Enable `inject_thinking_budget` for vLLM + Qwen3 models, which expect the upstream field name `thinking_token_budget`.
+
+> **vLLM note:** launch the server with `--reasoning-parser qwen3` and add a `--reasoning-config` such as `{"reasoning_end_str": "You have reached your reasoning budget. Stop exploring and give your final answer now."}` to surface a clean consolidation phrase before the final answer.
 
 #### `debug` — Raw Debug Logging
 
@@ -220,9 +222,9 @@ models:
 
 3. **Tool vision normalization**: If `normalize_tool_vision` is `true`, image parts are removed from `tool` messages and appended after the complete tool-result block in a multimodal `user` message. This preserves tool-call ordering while using the message shape accepted by LM Studio.
 
-4. **Thinking budget**: If `inject_thinking_budget` is `true`, a `thinking_budget` field is added when absent
+4. **Thinking budget**: If `inject_thinking_budget` is `true`, a `thinking_token_budget` field is added when absent (the config key remains `thinking_budget` for compatibility)
 
-5. **Thinking budget ceiling**: If `max_thinking_budget` is set, any client-provided `thinking_budget` exceeding this value is clamped down
+5. **Thinking budget ceiling**: If `max_thinking_budget` is set, any client-provided `thinking_token_budget` exceeding this value is clamped down
 
 ### How Streaming Retry Works
 

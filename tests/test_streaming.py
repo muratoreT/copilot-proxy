@@ -365,9 +365,9 @@ class TestThinkingOnlyDetection:
 
     def test_build_thinking_retry_body_halves_budget(self):
         from proxy.streaming import _build_thinking_retry_body
-        body = {"model": "test", "thinking_budget": 4096, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 4096, "stream": True}
         retry_body = _build_thinking_retry_body(body)
-        assert retry_body["thinking_budget"] == 2048
+        assert retry_body["thinking_token_budget"] == 2048
 
     def test_build_thinking_retry_body_adds_hint_without_budget(self):
         from proxy.streaming import _build_thinking_retry_body
@@ -378,17 +378,17 @@ class TestThinkingOnlyDetection:
 
     def test_build_thinking_retry_body_halves_to_zero_removes_field(self):
         from proxy.streaming import _build_thinking_retry_body
-        body = {"model": "test", "thinking_budget": 1, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 1, "stream": True}
         retry_body = _build_thinking_retry_body(body)
-        assert "thinking_budget" not in retry_body
+        assert "thinking_token_budget" not in retry_body
 
     def test_build_thinking_retry_body_preserves_other_fields(self):
         from proxy.streaming import _build_thinking_retry_body
-        body = {"model": "test", "thinking_budget": 2048, "temperature": 0.7, "stream": True}
+        body = {"model": "test", "thinking_token_budget": 2048, "temperature": 0.7, "stream": True}
         retry_body = _build_thinking_retry_body(body)
         assert retry_body["temperature"] == 0.7
         assert retry_body["model"] == "test"
-        assert retry_body["thinking_budget"] == 1024
+        assert retry_body["thinking_token_budget"] == 1024
 
     @pytest.mark.asyncio
     async def test_retry_on_thinking_only_stream(self):
@@ -447,7 +447,7 @@ class TestThinkingOnlyDetection:
             body={
                 "model": "test",
                 "stream": True,
-                "thinking_budget": 4096,
+                "thinking_token_budget": 4096,
                 "messages": [{"role": "user", "content": "hello"}],
             },
             proxy_config=config,
@@ -462,7 +462,7 @@ class TestThinkingOnlyDetection:
         assert mock_client.stream.call_count == 2
         # Second call should have halved budget
         retry_body = mock_client.stream.call_args_list[1].kwargs["json"]
-        assert retry_body["thinking_budget"] == 2048
+        assert retry_body["thinking_token_budget"] == 2048
 
 
 class TestResponseTokenScrubbing:
